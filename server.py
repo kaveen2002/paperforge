@@ -145,31 +145,47 @@ The quantity measured by the spring balance in Figure 1 is \dotfill \hfill (1)
 
 figures:
 - A bounding box for EVERY diagram/photo/figure (NOT tables, NOT text, NOT word boxes).
-- Coordinates are fractions of the image (x,y = top-left corner; w,h = size).
+- Coordinates are fractions of that specific image (x,y = top-left corner; w,h = size).
 - Box only the figure artwork, excluding caption and surrounding text.
 - Same order as the __FIGURE_n__ placeholders.
+- If MULTIPLE screenshots are provided for the same question, add "image_index" (0-based) to each
+  figure box indicating which screenshot it belongs to. E.g. {"x":0.2,"y":0.3,"w":0.5,"h":0.4,"image_index":1}
+  means the figure is in the second screenshot. If only one screenshot, omit image_index or set to 0.
 """
 
 # ============================ /convert =====================================
 @app.post("/convert")
-async def convert(image: UploadFile = File(...), questionNumber: int = Form(...)):
-    raw = await image.read()
-    try:
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-    except Exception:
-        raise HTTPException(400, "Could not read image")
-    W, H = img.size
+async def convert(images: List[UploadFile] = File(...), questionNumber: int = Form(...)):
+    # read all uploaded images
+    raw_list = []
+    img_list = []
+    for upload in images:
+        raw = await upload.read()
+        try:
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+        except Exception:
+            raise HTTPException(400, f"Could not read image: {upload.filename}")
+        raw_list.append((raw, upload.content_type or "image/png"))
+        img_list.append(img)
+
+    if not raw_list:
+        raise HTTPException(400, "No images provided")
 
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(500, "GEMINI_API_KEY not set on the server")
 
+    # build the Gemini content: all images + the instruction
+    content_parts = []
+    for i, (raw, mime) in enumerate(raw_list, start=1):
+        content_parts.append({"mime_type": mime, "data": raw})
+        if len(raw_list) > 1:
+            content_parts.append(f"(This is screenshot {i} of {len(raw_list)} for the same question.)")
+    content_parts.append(f"Convert this as Question {questionNumber}. JSON only.")
+
     model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
     try:
         resp = model.generate_content(
-            [
-                {"mime_type": image.content_type or "image/png", "data": raw},
-                f"Convert this as Question {questionNumber}. JSON only.",
-            ],
+            content_parts,
             generation_config={"response_mime_type": "application/json", "temperature": 0.2},
         )
         text = resp.text.strip()
@@ -186,11 +202,18 @@ async def convert(image: UploadFile = File(...), questionNumber: int = Form(...)
     total = data.get("totalMarks")
     figures = data.get("figures", []) or []
 
+    # figures now include an "image_index" (0-based) indicating which screenshot
+    # the figure is in. Default to 0 if not provided (single-image case).
     crops = []
     for i, box in enumerate(figures, start=1):
+        img_idx = box.get("image_index", 0)
+        if img_idx >= len(img_list):
+            img_idx = 0
+        src_img = img_list[img_idx]
+        W, H = src_img.size
         try:
             rect = _frac_to_px(box, W, H, pad=0.01)
-            crop = img.crop(rect)
+            crop = src_img.crop(rect)
             png = io.BytesIO(); crop.save(png, format="PNG"); png = png.getvalue()
         except Exception:
             continue
