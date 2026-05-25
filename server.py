@@ -29,7 +29,7 @@ from PIL import Image
 import google.generativeai as genai
 
 # ---- model config ----------------------------------------------------------
-MODEL = "gemini-2.5-flash-lite"
+MODEL = "gemini-2.0-flash"
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
 app = FastAPI(title="PaperForge (Gemini)")
@@ -47,30 +47,98 @@ def home():
 FIGURE_STORE = {}   # tempName -> PNG bytes
 
 SYSTEM_PROMPT = r"""
-You convert a screenshot of ONE exam question into Edexcel-style LaTeX.
+You convert a screenshot of ONE exam question into Edexcel-style LaTeX, matching a STRICT house style.
 
 Reply with STRICT JSON ONLY (no prose, no markdown fences), shape:
 {
-  "latex": "<the \\item body, WITHOUT the \\item line and WITHOUT the total-marks line>",
+  "latex": "<the body only: NO \\item line, NO (Total for Question...) line>",
   "totalMarks": <integer, or null if no total is printed in the image>,
   "figures": [ {"x":<0-1>,"y":<0-1>,"w":<0-1>,"h":<0-1>} ]
 }
 
-LaTeX rules:
-- Preserve wording, punctuation, symbols, bold, italics, fractions, surds, powers EXACTLY.
-- Sub-parts use nested \begin{enumerate} ... \end{enumerate}.
-- Inline maths \( \); display maths \[ \].
-- Marks per part as:  \hfill (2)
-- Leave working space with \vspace: 2-3cm short, 4-5cm medium, 6-8cm long.
-- For each figure, at the correct position insert:
+HOUSE STYLE RULES (follow exactly):
+- Preserve wording, punctuation, symbols, bold, italics, fractions, surds, powers EXACTLY as in the image.
+- Inline maths \( \); display maths \[ \]. Fractions \frac, surds \sqrt, units as plain text (m/s, Hz, \Omega).
+- Sub-parts use a nested \begin{enumerate} ... \end{enumerate}. Let enumerate produce the (a),(b),(i),(ii)
+  labels itself: DO NOT type "(a)", "(b)", "(i)" etc. at the start of an item. Just write the text.
+- Marks for a part go at the END of that part as:  \hfill (2)
+- After each part that needs working room, add \vspace: 2-3cm short, 4-5cm medium, 6-8cm long/algebra/proof.
+- FIGURES: for each diagram/photo, insert at the right spot:
     \begin{center}
     \includegraphics[width=0.7\textwidth]{__FIGURE_n__}
     \end{center}
-  where n = 1,2,3... in order of appearance. The server replaces __FIGURE_n__ with the real filename.
-- Do NOT add the \item line; do NOT add the (Total for Question ...) line.
+  n = 1,2,3... in order of appearance. NEVER add a caption, NEVER write the filename, and DO NOT
+  write loose label text like "Figure 1" unless it is part of the actual question wording.
+- MULTIPLE-CHOICE options: render as a tabular, one option per row, NOT as \begin{boxed} (that is invalid),
+  NOT as a nested enumerate. Use exactly:
+    \begin{center}
+    \begin{tabular}{|c|l|}
+    \hline
+    A & first option \\
+    \hline
+    B & second option \\
+    \hline
+    C & third option \\
+    \hline
+    D & fourth option \\
+    \hline
+    \end{tabular}
+    \end{center}
+- WORD/ANSWER BOXES (choose-from-the-box): a single-row tabular with the words separated by columns:
+    \begin{center}
+    \begin{tabular}{|c|c|c|c|}
+    \hline
+    density & mass & volume & weight \\
+    \hline
+    \end{tabular}
+    \end{center}
+- Fill-in answer lines use \dotfill, e.g.  \[ x = \dotfill \]
+- NEVER invent the \begin{boxed} environment. NEVER use \boxed except inside maths mode for a real boxed value.
+- Do NOT add the \item line; do NOT add the (Total for Question ...) line; the server adds both.
+
+WORKED EXAMPLE (image: a part (a) multiple choice about walking speed, then part (b) a spring-balance
+figure with a word box). Correct "latex" value:
+
+\begin{enumerate}
+\item Which of these speeds would be normal for a person walking? \hfill (1)
+
+\begin{center}
+\begin{tabular}{|c|l|}
+\hline
+A & 0.1 m/s \\
+\hline
+B & 1.0 m/s \\
+\hline
+C & 10 m/s \\
+\hline
+D & 100 m/s \\
+\hline
+\end{tabular}
+\end{center}
+\vspace{1cm}
+
+\item Figure 1 shows a block hanging from a spring balance.
+
+\begin{center}
+\includegraphics[width=0.7\textwidth]{__FIGURE_1__}
+\end{center}
+
+Use a word from the box to complete the sentence below.
+
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+density & mass & volume & weight \\
+\hline
+\end{tabular}
+\end{center}
+
+The quantity measured by the spring balance in Figure 1 is \dotfill \hfill (1)
+\vspace{2cm}
+\end{enumerate}
 
 figures:
-- A bounding box for EVERY diagram/photo/figure (NOT tables, NOT text).
+- A bounding box for EVERY diagram/photo/figure (NOT tables, NOT text, NOT word boxes).
 - Coordinates are fractions of the image (x,y = top-left corner; w,h = size).
 - Box only the figure artwork, excluding caption and surrounding text.
 - Same order as the __FIGURE_n__ placeholders.
