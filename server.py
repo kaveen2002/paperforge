@@ -47,153 +47,235 @@ def home():
 FIGURE_STORE = {}   # tempName -> PNG bytes
 
 SYSTEM_PROMPT = r"""
-You are creating Edexcel-style exam papers in LaTeX. You convert a screenshot of ONE exam question
-into perfectly formatted LaTeX, following STRICT rules below.
+You convert a screenshot of ONE exam question into Edexcel-style LaTeX. Match the house style EXACTLY.
 
-OUTPUT FORMAT: Reply with STRICT JSON ONLY (no prose, no markdown fences, no explanations), shape:
+OUTPUT: STRICT JSON ONLY (no prose, no markdown fences):
 {
-  "latex": "<the question body — see rules below for what to include/exclude>",
-  "totalMarks": <integer total marks for the question, or null if not visible in the image>,
-  "figures": [ {"x":<0-1>,"y":<0-1>,"w":<0-1>,"h":<0-1>,"image_index":<0-based>} ]
+  "latex": "<question body>",
+  "totalMarks": <integer or null>,
+  "figures": [ {"box_2d": [ymin, xmin, ymax, xmax], "label": "<description>", "image_index": 0} ]
 }
 
-=== STRICT FORMATTING RULES ===
+=== CORE RULES ===
 
-1. WORDING: Copy the question EXACTLY as shown. Do NOT change wording, punctuation, symbols,
-   or rephrase anything. Preserve bold, italics, vectors, matrices, fractions, surds, powers exactly.
+1. WORDING: Copy EXACTLY as shown. Never change wording, punctuation, symbols. Never rephrase or skip.
 
 2. STRUCTURE:
-   - The "latex" value is the BODY of the question only.
-   - Do NOT include \item at the start (the server adds it).
-   - Do NOT include the (Total for Question X is Y marks) line (the server adds it).
-   - If the question has sub-parts, use nested \begin{enumerate} ... \end{enumerate}.
-   - Let enumerate produce (a),(b),(i),(ii) labels automatically.
-     DO NOT manually type "(a)", "(b)", "(i)" etc. at the start of items.
+   - "latex" = question body only.
+   - Do NOT write \item at the start (server adds it).
+   - Do NOT write a "Total for Question" line (server adds it).
+   - Sub-parts: nested \begin{enumerate}...\end{enumerate}, let enumerate auto-label.
+     NEVER manually type (a), (b), (i), (ii) at start of \item.
+   - End each question with \hline as separator.
 
-3. MARKS: Each part must end with marks shown as:  \hfill (2)
-   Place the mark allocation at the END of each part's text.
+3. MARKS: Each part ends with \hfill (N) AFTER question text, BEFORE \vspace:
+   Work out the value of x. \hfill (3)
+   \vspace{4cm}
 
-4. MATHS FORMATTING:
-   - Inline maths: \( ... \)
-   - Display maths: \[ ... \]
-   - Fractions: \frac{}{}, surds: \sqrt{}, units as plain text (m/s, Hz, \Omega).
-   - Vectors: \vec or \mathbf. Degrees: ^\circ.
+4. MATHS:
+   - Inline: \( ... \), use \dfrac for inline fractions.
+   - Display: \[ ... \], use \frac in display.
+   - Units: plain text (m/s, km, cm, Hz, g/cm^3). Greek: \Omega, \pi.
+   - Vectors: \mathbf{a}, \vec{a}, \overrightarrow{OA}.
+   - Degrees: ^\circ. Currency: use pounds directly or \pounds.
+   - Aligned equations: \begin{aligned}...\end{aligned} inside \[ \].
 
-5. WORKING SPACE: After each part that needs working room, add \vspace:
-   - Small/short questions: 2-3cm
-   - Medium questions: 4-5cm
-   - Large algebra/geometry/proof questions: 6-8cm
+5. WORKING SPACE - match marks to space:
+   - 1 mark (state/write down): \vspace{1cm} or \vspace{2cm}
+   - 2 marks: \vspace{2cm} or \vspace{3cm}
+   - 3 marks: \vspace{3cm} or \vspace{4cm}
+   - 4 marks: \vspace{4cm} or \vspace{5cm}
+   - 5+ marks: \vspace{5cm} to \vspace{8cm}
+   NEVER exceed 10cm. Be conservative. Small gaps (0.3cm) for visual spacing between conditions.
 
-6. TABLES: Format using:
+6. TABLES:
    \begin{center}
    \begin{tabular}{|c|c|}
    \hline
-   ...
-   \hline
+   \textbf{Header} & \textbf{Header} \\ \hline
+   data & data \\ \hline
    \end{tabular}
    \end{center}
 
-7. MULTIPLE-CHOICE options: Render as a tabular (NOT as enumerate, NOT as \begin{boxed}):
+7. MULTIPLE CHOICE (A/B/C/D):
    \begin{center}
    \begin{tabular}{|c|l|}
    \hline
-   A & first option \\
-   \hline
-   B & second option \\
-   \hline
-   C & third option \\
-   \hline
-   D & fourth option \\
-   \hline
+   A & option \\ \hline
+   B & option \\ \hline
+   C & option \\ \hline
+   D & option \\ \hline
    \end{tabular}
    \end{center}
 
-8. WORD/ANSWER BOXES (choose-from-the-box): Single-row tabular:
+8. WORD BOXES:
    \begin{center}
    \begin{tabular}{|c|c|c|c|}
    \hline
-   word1 & word2 & word3 & word4 \\
-   \hline
+   word1 & word2 & word3 & word4 \\ \hline
    \end{tabular}
    \end{center}
 
-9. FILL-IN ANSWER LINES: Use \dotfill, e.g.  \[ x = \dotfill \]
+9. ANSWER LINES: Use \underline{\hspace{Ncm}} or \rule{Ncm}{0.15mm}:
+   \hfill \textbf{Answer:} \underline{\hspace{5cm}}
+   or for labelled answers:
+   \hfill \( x = \) \underline{\hspace{4cm}}
+   Use \dotfill for fill-in-the-blank inside display maths: \[ x = \dotfill \]
 
-10. FIGURES/DIAGRAMS: For each diagram or photo in the screenshot, insert at the correct position:
+10. BULLET LISTS: Use \begin{itemize} \item ... \end{itemize} when the original has bullet points.
+
+11. FIGURES: Insert at correct position:
     \begin{center}
-    \includegraphics[width=0.7\textwidth]{__FIGURE_n__}
+    \includegraphics[width=0.6\textwidth]{__FIGURE_n__}
     \end{center}
-    where n = 1,2,3... in order of appearance. The server replaces __FIGURE_n__ with the real filename.
-    - NEVER add a caption below the figure.
-    - NEVER write the filename as visible text.
-    - Do NOT write loose label text like "Figure 1" UNLESS it is part of the actual question wording.
+    n=1,2,3 in order. Server replaces __FIGURE_n__ with real filename.
+    - NEVER add a caption or write the filename.
+    - Write "Figure 1" ONLY if it appears in the actual question wording.
+    - Width: 0.45-0.55 for small diagrams, 0.6-0.7 for medium, 0.75-0.9 for graphs/grids.
 
-11. PACKAGE LIMIT: The document preamble loads ONLY these packages:
-    amsmath, amssymb, inputenc, geometry, array, graphicx, xcolor.
-    Use ONLY commands from these (and base LaTeX). NEVER use commands needing other packages.
-    In particular: NO tikz, pgfplots, siunitx (\SI, \si), cancel, booktabs (\toprule etc.),
-    enumitem options, chemfig, or multirow.
+12. LINE BREAKS: Use \\ only for genuine line breaks (listing conditions). NOT after every sentence.
+    Use \vspace{0.3cm} for small visual gaps between conditions/statements.
+    Use \noindent before paragraphs that should not indent.
 
-12. NEVER invent \begin{boxed}. NEVER use \boxed except inside maths mode for a real boxed value.
+13. PACKAGES: Preamble loads ONLY: amsmath, amssymb, inputenc, geometry, array, graphicx, xcolor.
+    NEVER use tikz, siunitx, booktabs, enumitem, cancel, chemfig.
+    You MAY use base LaTeX: itemize, tabbing, minipage, flushright, quote, noindent, null, medskip.
 
-13. Do NOT add explanations, commentary, or summaries. Output ONLY the LaTeX in the JSON.
+14. FORBIDDEN: \begin{boxed}, manual (a)/(b) labels, explanations, commentary, excessive spacing.
 
-14. Maintain professional Edexcel exam-paper style: clean spacing, consistent layout, proper alignment.
+=== EXAMPLES ===
 
-=== WORKED EXAMPLE ===
+EX1 — Simple question:
 
-Image shows: part (a) multiple choice about walking speed, part (b) a spring-balance figure with a word box.
+The 3rd term of an arithmetic series is 25.
 
-Correct "latex" value:
+The sum of the first 10 terms is 350.
+
+Find the 12th term. \hfill (5)
+
+\vspace{6cm}
+
+\hline
+
+EX2 — Sub-parts with algebra:
 
 \begin{enumerate}
-\item Which of these speeds would be normal for a person walking? \hfill (1)
+  \item Given that
+  \[
+    \frac{y^5 \times y^n}{y^6} = y^{13},
+  \]
+  work out the value of \(n\). \hfill (2)
+
+  \vspace{1cm}
+
+  \item Work out
+  \[
+    \frac{9.6 \times 10^{141} + 6.4 \times 10^{140}}{3.2 \times 10^{16}}.
+  \]
+  Give your answer in standard form. \hfill (2)
+  \vspace{4cm}
+\end{enumerate}
+\hline
+
+EX3 — Question with image and answer line:
+
+The diagram shows a shape made up of three semicircles, enclosing a right-angled triangle.
 
 \begin{center}
-\begin{tabular}{|c|l|}
-\hline
-A & 0.1 m/s \\
-\hline
-B & 1.0 m/s \\
-\hline
-C & 10 m/s \\
-\hline
-D & 100 m/s \\
-\hline
-\end{tabular}
+\includegraphics[width=0.6\textwidth]{__FIGURE_1__}
 \end{center}
-\vspace{1cm}
 
-\item Figure 1 shows a block hanging from a spring balance.
+\( AB, BC \text{ and } CA \) are each the diameter of a semicircle.
+
+\( BC = CA = 6\,\text{cm} \)
+
+Work out the perimeter of the shape.
+Give your answer correct to one decimal place.
+
+\vspace{4cm}
+
+\hfill \underline{\hspace{3cm}} cm \hfill (4)
+
+\hline
+
+EX4 — Functions:
+
+\begin{enumerate}
+  \item $f(x)=\dfrac{2}{x},\quad g(x)=\dfrac{x+1}{x}.$\\
+  State which value of $x$ cannot be included in the domain of $f$ or $g$.
+  \vspace{2cm}\hfill (1)
+
+  \item Solve the equation
+  \[
+    g\bigl(f(a)\bigr)=3.
+  \]
+  \vspace{4cm}\hfill (2)
+
+  \item Express the inverse function $g^{-1}$ in the form $g^{-1}(x)$.
+  \vspace{5cm}\hfill (2)
+\end{enumerate}
+\hline
+
+EX5 — Vectors:
+
+Vector \( \mathbf{m} = \begin{pmatrix} 2 \\ k \end{pmatrix} \) and vector \( \mathbf{n} = \begin{pmatrix} 3 \\ 11 \end{pmatrix} \)
+
+\medskip
+
+Vector \( 2\mathbf{m} + \mathbf{n} \) is parallel to \( \begin{pmatrix} 1 \\ -1 \end{pmatrix} \)
+
+\medskip
+
+Find the value of \( k \). \hfill (4)
+
+\vspace{3cm}
+
+\hline
+
+EX6 — Bearings with bullet list:
+
+The diagram shows the positions of three villages, \( A, B \) and \( C \).
 
 \begin{center}
 \includegraphics[width=0.7\textwidth]{__FIGURE_1__}
 \end{center}
 
-Use a word from the box to complete the sentence below.
+\begin{itemize}
+    \item The bearing of \( B \) from \( A \) is \( 054^\circ \)
+    \item The bearing of \( C \) from \( B \) is \( 132^\circ \)
+\end{itemize}
 
-\begin{center}
-\begin{tabular}{|c|c|c|c|}
-\hline
-density & mass & volume & weight \\
-\hline
-\end{tabular}
-\end{center}
+Melur walks from \( A \) to \( B \)
+She then walks from \( B \) to \( C \) and from \( C \) to \( A \)
 
-The quantity measured by the spring balance in Figure 1 is \dotfill \hfill (1)
-\vspace{2cm}
-\end{enumerate}
+\vspace{0.3cm}
+
+Melur walks at an average speed of 6 km/h
+
+\vspace{0.3cm}
+
+Work out the total time Melur takes.
+Give your answer in hours and minutes.
+
+\vspace{3.5cm}
+
+\hfill \underline{\hspace{2.5cm}} hours \quad \underline{\hspace{2.5cm}} minutes \hfill (5)
+
+\hline
 
 === FIGURE BOUNDING BOXES ===
 
-- Provide a bounding box for EVERY diagram/photo/figure (NOT tables, NOT text, NOT word boxes).
-- Coordinates are fractions of that specific image (x,y = top-left corner; w,h = size).
-- Box only the figure artwork, excluding caption text and surrounding question text.
-- Same order as the __FIGURE_n__ placeholders.
-- If MULTIPLE screenshots are provided for the same question, add "image_index" (0-based) to each
-  figure box indicating which screenshot it belongs to.
-  E.g. {"x":0.2,"y":0.3,"w":0.5,"h":0.4,"image_index":1} = figure is in the second screenshot.
-  If only one screenshot, omit image_index or set to 0.
+Use Gemini's native object detection format for figures:
+- For EVERY diagram/photo/figure (NOT tables, NOT text, NOT word boxes, NOT equations),
+  return a "box_2d" in the format [ymin, xmin, ymax, xmax] with coordinates normalized to 0-1000.
+  This means coordinates represent positions on a 1000x1000 version of the image.
+- Return figures as:
+  "figures": [ {"box_2d": [ymin, xmin, ymax, xmax], "label": "description", "image_index": 0} ]
+- Box ONLY the figure artwork — exclude caption text, question text, and labels around the figure.
+  The box should be TIGHT around the illustration/photo/diagram itself.
+- Same order as __FIGURE_n__ placeholders in the LaTeX.
+- image_index is 0-based (which screenshot the figure is in). Single screenshot: use 0.
+- If NO figures exist in the image, return "figures": []
 """
 
 # ============================ /convert =====================================
@@ -245,18 +327,25 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     total = data.get("totalMarks")
     figures = data.get("figures", []) or []
 
-    # figures now include an "image_index" (0-based) indicating which screenshot
-    # the figure is in. Default to 0 if not provided (single-image case).
+    # figures now use Gemini's native box_2d format: [ymin, xmin, ymax, xmax] scaled 0-1000
     crops = []
-    for i, box in enumerate(figures, start=1):
-        img_idx = box.get("image_index", 0)
+    for i, fig in enumerate(figures, start=1):
+        img_idx = fig.get("image_index", 0)
         if img_idx >= len(img_list):
             img_idx = 0
         src_img = img_list[img_idx]
         W, H = src_img.size
         try:
-            rect = _frac_to_px(box, W, H, pad=0.01)
+            box = fig.get("box_2d", [])
+            if not box or len(box) != 4:
+                continue
+            rect = _box2d_to_px(box, W, H, pad_frac=0.02)
+            if rect is None:
+                continue
             crop = src_img.crop(rect)
+            # skip tiny or degenerate crops
+            if crop.width < 10 or crop.height < 10:
+                continue
             png = io.BytesIO(); crop.save(png, format="PNG"); png = png.getvalue()
         except Exception:
             continue
@@ -264,17 +353,44 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
         FIGURE_STORE[tmp_name] = png
         preview = "data:image/png;base64," + base64.standard_b64encode(png).decode()
         crops.append({"placeholder": f"__FIGURE_{i}__", "tempName": tmp_name,
-                      "box": box, "rect": rect, "dataUrl": preview})
+                      "box_2d": box, "rect": rect, "dataUrl": preview})
 
     return {"latex": latex, "totalMarks": total, "marksFound": total is not None,
             "figures": figures, "crops": crops}
 
 
-def _frac_to_px(box, W, H, pad=0.0):
-    x = int(box["x"] * W); y = int(box["y"] * H)
-    w = int(box["w"] * W); h = int(box["h"] * H)
-    px = int(pad * W); py = int(pad * H)
-    return (max(0, x - px), max(0, y - py), min(W, x + w + px), min(H, y + h + py))
+def _box2d_to_px(box_2d, W, H, pad_frac=0.02):
+    """Convert Gemini box_2d [ymin, xmin, ymax, xmax] (0-1000) to pixel rect (left, top, right, bottom).
+    
+    Gemini returns coordinates on a virtual 1000x1000 grid.
+    ymin/ymax are vertical (top/bottom), xmin/xmax are horizontal (left/right).
+    We descale to actual image pixels, add padding, and clamp to image bounds.
+    """
+    ymin, xmin, ymax, xmax = box_2d
+    
+    # validate: all coords should be 0-1000 range
+    for v in (ymin, xmin, ymax, xmax):
+        if not (0 <= v <= 1000):
+            return None
+    # validate: min < max
+    if ymin >= ymax or xmin >= xmax:
+        return None
+    
+    # descale from 1000-grid to actual pixels
+    left   = int(xmin / 1000 * W)
+    top    = int(ymin / 1000 * H)
+    right  = int(xmax / 1000 * W)
+    bottom = int(ymax / 1000 * H)
+    
+    # add padding (percentage of image dimensions)
+    pad_x = int(pad_frac * W)
+    pad_y = int(pad_frac * H)
+    left   = max(0, left - pad_x)
+    top    = max(0, top - pad_y)
+    right  = min(W, right + pad_x)
+    bottom = min(H, bottom + pad_y)
+    
+    return (left, top, right, bottom)
 
 
 # ============================ /export ======================================
