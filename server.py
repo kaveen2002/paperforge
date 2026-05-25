@@ -1,10 +1,13 @@
 """
-PaperForge backend — Gemini edition (production-tuned)
-======================================================
-POST /convert  ->  image(s) + questionNumber  =>  { latex, totalMarks, figures, crops }
-POST /export   ->  full paper state            =>  zip of paper.tex + all N.png figures
+PaperForge backend — Structured Extraction edition
+====================================================
+The model EXTRACTS structured data (no LaTeX). Deterministic code GENERATES LaTeX
+from fixed templates. This guarantees 100% consistent formatting.
+
+POST /convert  ->  image(s) + questionNumber  =>  { latex, totalMarks, structured, crops }
+POST /export   ->  full paper state            =>  zip of paper.tex + N.png figures
 GET  /         ->  serves index.html
-GET  /health   ->  status check
+GET  /health   ->  status
 """
 
 import os, io, json, base64, zipfile, re
@@ -34,148 +37,221 @@ def home():
 FIGURE_STORE = {}
 
 # ============================================================================
-# THE PROMPT — tuned against 3 real hand-written papers, every pattern matched
+# EXTRACTION PROMPT — model returns STRUCTURED DATA only, never LaTeX formatting
 # ============================================================================
 SYSTEM_PROMPT = r"""
-You convert a screenshot of ONE exam question into Edexcel-style LaTeX.
+You read a screenshot of ONE exam question and extract its STRUCTURE as JSON.
+You do NOT write LaTeX layout. You only identify the content and label its parts.
 
-Return STRICT VALID JSON (properly escaped, no markdown fences):
+Return STRICT VALID JSON:
 {
-  "latex": "<question body only>",
-  "totalMarks": <integer or null if not visible>,
-  "figures": [{"box_2d":[ymin,xmin,ymax,xmax],"label":"desc","image_index":0}]
+  "intro": "<any text/equations that appear BEFORE the first sub-part, or '' if none>",
+  "parts": [
+    {
+      "label": "a",                      // a, b, c... or "i","ii" for nested; "" if question has no parts
+      "level": 0,                        // 0 = top-level part (a,b,c), 1 = nested (i,ii)
+      "text": "<the full text of this part/question>",
+      "marks": <integer or null>,
+      "answer_type": "none|line|line_unit|equation_box|two_lines",
+      "answer_label": "<e.g. 'wave speed' or 'x' or '' >",
+      "answer_unit": "<e.g. 'm/s' or 'cm' or '' >",
+      "figure_here": <true if a figure appears within this part, else false>,
+      "is_table": <true if this part contains a data table>,
+      "table": {"headers": ["..."], "rows": [["..."],["..."]]},  // only if is_table
+      "is_mcq": <true if multiple choice>,
+      "mcq_options": ["option A text","option B text",...],       // only if is_mcq
+      "bullets": ["bullet 1","bullet 2"]                          // [] if none
+    }
+  ],
+  "figures": [{"box_2d":[ymin,xmin,ymax,xmax],"image_index":0}],
+  "totalMarks": <integer or null>
 }
 
-RULES:
-
-1. COPY wording EXACTLY. Never rephrase, reorder, or skip anything.
-
-2. "latex" = question body only. The server adds \item, the total-marks line, and \hline.
-   Do NOT include \item. Do NOT include "Total for Question" line. Do NOT include \hline.
-
-3. SUB-PARTS: use \begin{enumerate}...\end{enumerate}. Auto-labels only.
-   NEVER type (a), (b), (i), (ii) manually at start of \item.
-
-4. MARKS: \hfill (N) after question text, then \vspace on next line:
-   Calculate the speed. \hfill (2)
-   \vspace{3cm}
-
-5. SPACING by marks (be generous for calculations):
-   1-mark state/name: \vspace{2cm}
-   2-mark calculate: \vspace{3cm}
-   3-mark explain/describe: \vspace{4cm}
-   4-mark: \vspace{5cm}
-   5+ mark: \vspace{6cm} to \vspace{8cm}
-   Tiny gaps between conditions: \vspace{0.3cm}
-   After answer blanks: \vspace{0.5cm}
-
-6. MATHS: inline \( \), display \[ \]. \dfrac inline, \frac display.
-   Units: thin-space then text (220\,m, 0.70\,s). Degrees: ^\circ.
-   Vectors: \mathbf{a}, \overrightarrow{OA}. Matrices: \begin{pmatrix}.
-   Aligned: \begin{aligned}...\end{aligned} inside \[ \].
-
-7. TABLES:
-   \begin{center}
-   \begin{tabular}{|c|c|}
-   \hline
-   \textbf{Header} & \textbf{Header} \\ \hline
-   data & data \\ \hline
-   \end{tabular}
-   \end{center}
-
-8. MCQ: tabular |c|l| with A/B/C/D rows.
-
-9. WORD BOXES: single-row tabular |c|c|c|c|.
-
-10. ANSWER BLANKS (right-aligned with unit):
-    \hfill wave speed = \underline{\hspace{5cm}} m/s
-    \vspace{0.5cm}
-    Or: \hfill \textbf{Answer:} \underline{\hspace{5cm}}
-    Or in display: \[ x = \dotfill \]
-
-11. BULLET LISTS: \begin{itemize}\item...\end{itemize}.
-
-12. FIGURES at correct position:
-    \begin{center}
-    \includegraphics[width=0.6\textwidth]{__FIGURE_n__}
-    \end{center}
-    Width: 0.45-0.85\textwidth. NEVER add captions or write filename.
-
-13. LINE BREAKS: \\ only for genuine breaks. \noindent as needed.
-
-14. PACKAGES: only amsmath, amssymb, inputenc, geometry, array, graphicx, xcolor.
-    NEVER use tikz, siunitx, booktabs, enumitem, cancel, boxed environment.
-
-EXAMPLES:
-
-EX1 — Simple:
-The 3rd term of an arithmetic series is 25.
-
-The sum of the first 10 terms is 350.
-
-Find the 12th term. \hfill (5)
-
-\vspace{6cm}
-
-EX2 — Physics calculate + answer blank:
-\begin{enumerate}
-  \item A sound wave in air travels a distance of 220\,m in a time of 0.70\,s.
-  \begin{enumerate}
-    \item State the equation linking speed, distance and time. \hfill (1)
-    \vspace{2cm}
-
-    \item Calculate the speed of the sound wave in air. \hfill (2)
-    \vspace{3cm}
-
-    \hfill wave speed = \underline{\hspace{5cm}} m/s
-    \vspace{0.5cm}
-  \end{enumerate}
-
-  \item Sound waves are longitudinal waves.
-  Water waves are transverse waves.
-
-  Describe the difference between longitudinal waves and transverse waves. \hfill (3)
-  \vspace{4cm}
-\end{enumerate}
-
-EX3 — Image + answer line:
-The diagram shows a shape made up of three semicircles.
-
-\begin{center}
-\includegraphics[width=0.6\textwidth]{__FIGURE_1__}
-\end{center}
-
-\( BC = CA = 6\,\text{cm} \)
-
-Work out the perimeter of the shape.
-Give your answer correct to one decimal place.
-
-\vspace{4cm}
-
-\hfill \underline{\hspace{3cm}} cm \hfill (4)
-
-EX4 — Bearings + bullets:
-\begin{center}
-\includegraphics[width=0.7\textwidth]{__FIGURE_1__}
-\end{center}
-
-\begin{itemize}
-    \item The bearing of \( B \) from \( A \) is \( 054^\circ \)
-    \item The bearing of \( C \) from \( B \) is \( 132^\circ \)
-\end{itemize}
-
-Work out the total time Melur takes.
-Give your answer in hours and minutes.
-
-\vspace{3.5cm}
-
-\hfill \underline{\hspace{2.5cm}} hours \quad \underline{\hspace{2.5cm}} minutes \hfill (5)
+EXTRACTION RULES:
+- Copy ALL text EXACTLY as shown. Preserve wording, numbers, punctuation, symbols.
+- For maths in text, write it in LaTeX inline form using \( \) — e.g. \( x^2 + 3x \), \( 105^\circ \), \( \dfrac{a}{b} \).
+- For a question with NO sub-parts: use ONE part with label "" and level 0.
+- For sub-parts (a),(b),(c): each is a part with its label and level 0.
+- For nested (i),(ii) under a part: separate parts with level 1, labels "i","ii".
+- marks: the number in (N) for that part, or null if none shown.
+- answer_type:
+    "none" = no answer blank needed (just working space)
+    "line" = a single answer blank line
+    "line_unit" = answer blank with a unit (set answer_unit)
+    "equation_box" = answer of form "x = ___" (set answer_label)
+    "two_lines" = two answer blanks (e.g. two values)
+- figure_here: true if a diagram/photo belongs in this part's flow.
+- bullets: if the part lists items as bullets, put them here (text only, no markers).
+- is_table/table: extract data tables with headers and rows.
+- is_mcq/mcq_options: extract A/B/C/D choices as a list.
 
 FIGURE BOXES:
-- box_2d: [ymin, xmin, ymax, xmax] normalized 0-1000.
-- TIGHT around artwork only (not text/tables/equations).
-- image_index: 0-based. Empty [] if no figures.
+- box_2d: [ymin, xmin, ymax, xmax] normalized 0-1000, TIGHT around artwork only.
+- Detect diagrams/photos ONLY (not tables, not text, not equations).
+- image_index: 0-based which screenshot. Empty [] if no figures.
+
+Do NOT output any LaTeX layout commands (no \item, \vspace, \hfill, \begin, etc).
+Only the content text (with inline maths) and the structural labels above.
 """
+
+# ============================================================================
+# DETERMINISTIC LATEX GENERATOR — fixed templates, 100% consistent
+# ============================================================================
+
+# fixed spacing by mark count — SAME every time
+SPACE_BY_MARKS = {0: "2cm", 1: "2cm", 2: "3cm", 3: "4cm", 4: "5cm", 5: "6cm", 6: "7cm"}
+def _space_for(marks):
+    if marks is None:
+        return "2cm"
+    return SPACE_BY_MARKS.get(marks, "8cm" if marks > 6 else "2cm")
+
+def _answer_block(part):
+    """Generate a consistent answer blank based on answer_type."""
+    at = part.get("answer_type", "none")
+    label = part.get("answer_label", "") or ""
+    unit = part.get("answer_unit", "") or ""
+    if at == "line":
+        return "\n\\hfill \\underline{\\hspace{5cm}}\n\\vspace{0.5cm}"
+    if at == "line_unit":
+        lab = f"{label} = " if label else ""
+        return f"\n\\hfill {lab}\\underline{{\\hspace{{5cm}}}} {unit}\n\\vspace{{0.5cm}}"
+    if at == "equation_box":
+        lab = label if label else "x"
+        return f"\n\\[ {lab} = \\dotfill \\]\n\\vspace{{0.3cm}}"
+    if at == "two_lines":
+        return ("\n\\hfill \\underline{\\hspace{4cm}}\n\\vspace{0.3cm}"
+                "\n\\hfill \\underline{\\hspace{4cm}}\n\\vspace{0.5cm}")
+    return ""
+
+def _render_table(tbl):
+    headers = tbl.get("headers", [])
+    rows = tbl.get("rows", [])
+    ncol = max(len(headers), max((len(r) for r in rows), default=0)) or 2
+    spec = "|" + "c|" * ncol
+    out = ["\\begin{center}", f"\\begin{{tabular}}{{{spec}}}", "\\hline"]
+    if headers:
+        out.append(" & ".join(f"\\textbf{{{h}}}" for h in headers) + " \\\\ \\hline")
+    for r in rows:
+        cells = list(r) + [""] * (ncol - len(r))
+        out.append(" & ".join(str(c) for c in cells) + " \\\\ \\hline")
+    out += ["\\end{tabular}", "\\end{center}"]
+    return "\n".join(out)
+
+def _render_mcq(options):
+    out = ["\\begin{center}", "\\begin{tabular}{|c|l|}", "\\hline"]
+    letters = ["A", "B", "C", "D", "E", "F"]
+    for i, opt in enumerate(options):
+        out.append(f"{letters[i]} & {opt} \\\\ \\hline")
+    out += ["\\end{tabular}", "\\end{center}"]
+    return "\n".join(out)
+
+def _render_bullets(bullets):
+    out = ["\\begin{itemize}"]
+    for b in bullets:
+        out.append(f"    \\item {b}")
+    out.append("\\end{itemize}")
+    return "\n".join(out)
+
+def _figure_placeholder(n):
+    return ("\\begin{center}\n"
+            f"\\includegraphics[width=0.6\\textwidth]{{__FIGURE_{n}__}}\n"
+            "\\end{center}")
+
+def _render_part(part, fig_counter):
+    """Render one part into LaTeX. Returns (latex, new_fig_counter)."""
+    lines = []
+    text = part.get("text", "").strip()
+
+    # figure (if it belongs in this part)
+    if part.get("figure_here"):
+        fig_counter[0] += 1
+        # figure goes before the question text typically
+    # table
+    if part.get("is_table") and part.get("table"):
+        if text:
+            lines.append(text)
+        lines.append(_render_table(part["table"]))
+        text = ""  # consumed
+    # text
+    if text:
+        lines.append(text)
+    # bullets
+    if part.get("bullets"):
+        lines.append(_render_bullets(part["bullets"]))
+    # figure placeholder
+    if part.get("figure_here"):
+        lines.append(_figure_placeholder(fig_counter[0]))
+    # mcq
+    if part.get("is_mcq") and part.get("mcq_options"):
+        lines.append(_render_mcq(part["mcq_options"]))
+
+    body = "\n".join(lines)
+
+    # marks
+    marks = part.get("marks")
+    if marks is not None:
+        body += f" \\hfill ({marks})"
+
+    # working space
+    body += f"\n\\vspace{{{_space_for(marks)}}}"
+
+    # answer block
+    body += _answer_block(part)
+
+    return body, fig_counter
+
+def generate_latex(structured):
+    """Deterministically build the question body LaTeX from structured data."""
+    fig_counter = [0]
+    blocks = []
+
+    intro = (structured.get("intro") or "").strip()
+    if intro:
+        blocks.append(intro)
+
+    parts = structured.get("parts", [])
+    # detect if there are real sub-parts (more than one, or labeled)
+    has_subparts = len(parts) > 1 or (len(parts) == 1 and parts[0].get("label"))
+
+    if not has_subparts and len(parts) == 1:
+        # single question, no enumerate
+        body, fig_counter = _render_part(parts[0], fig_counter)
+        blocks.append(body)
+    else:
+        # group by nesting: build enumerate with possible nested enumerate
+        out = ["\\begin{enumerate}"]
+        i = 0
+        while i < len(parts):
+            p = parts[i]
+            if p.get("level", 0) == 0:
+                body, fig_counter = _render_part(p, fig_counter)
+                # check for nested level-1 parts following
+                nested = []
+                j = i + 1
+                while j < len(parts) and parts[j].get("level", 0) == 1:
+                    nested.append(parts[j])
+                    j += 1
+                if nested:
+                    out.append(f"  \\item {body}")
+                    out.append("  \\begin{enumerate}")
+                    for np in nested:
+                        nbody, fig_counter = _render_part(np, fig_counter)
+                        out.append(f"    \\item {nbody}")
+                    out.append("  \\end{enumerate}")
+                    i = j
+                else:
+                    out.append(f"  \\item {body}")
+                    i += 1
+            else:
+                # stray nested part without parent — treat as item
+                body, fig_counter = _render_part(p, fig_counter)
+                out.append(f"  \\item {body}")
+                i += 1
+        out.append("\\end{enumerate}")
+        blocks.append("\n".join(out))
+
+    return "\n\n".join(blocks)
+
 
 # ============================================================================
 # /convert
@@ -197,13 +273,12 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(500, "GEMINI_API_KEY not set on the server")
 
-    # build content: all images + instruction
     content_parts = []
     for i, (raw, mime) in enumerate(raw_list, start=1):
         content_parts.append({"mime_type": mime, "data": raw})
         if len(raw_list) > 1:
             content_parts.append(f"(Screenshot {i} of {len(raw_list)} for the same question.)")
-    content_parts.append(f"Convert this as Question {questionNumber}. Return valid JSON only.")
+    content_parts.append(f"Extract the structure of this exam question. Return valid JSON only.")
 
     model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
     try:
@@ -215,19 +290,20 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     except Exception as e:
         raise HTTPException(502, f"Gemini call failed: {e}")
 
-    # parse JSON with repair
-    data = _parse_json(text)
-    if data is None:
+    structured = _parse_json(text)
+    if structured is None:
         raise HTTPException(502, f"Model did not return valid JSON:\n{text[:500]}")
 
-    latex = data.get("latex", "")
-    # SERVER CLEANUP: strip anything the model shouldn't have added
-    latex = _clean_latex(latex)
+    # GENERATE LATEX DETERMINISTICALLY from the structured data
+    try:
+        latex = generate_latex(structured)
+    except Exception as e:
+        raise HTTPException(500, f"LaTeX generation failed: {e}")
 
-    total = data.get("totalMarks")
-    figures = data.get("figures", []) or []
+    total = structured.get("totalMarks")
+    figures = structured.get("figures", []) or []
 
-    # crop figures using Gemini's box_2d format
+    # crop figures
     crops = []
     for i, fig in enumerate(figures, start=1):
         img_idx = min(fig.get("image_index", 0), len(img_list) - 1)
@@ -243,9 +319,7 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
             crop = src_img.crop(rect)
             if crop.width < 10 or crop.height < 10:
                 continue
-            png_buf = io.BytesIO()
-            crop.save(png_buf, format="PNG")
-            png = png_buf.getvalue()
+            png_buf = io.BytesIO(); crop.save(png_buf, format="PNG"); png = png_buf.getvalue()
         except Exception:
             continue
         tmp_name = f"q{questionNumber}_fig{i}.png"
@@ -255,23 +329,19 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
                       "box_2d": box, "rect": rect, "dataUrl": preview})
 
     return {"latex": latex, "totalMarks": total, "marksFound": total is not None,
-            "figures": figures, "crops": crops}
+            "structured": structured, "crops": crops}
 
 
 def _parse_json(text):
-    """Try to parse JSON, with repair for common model output issues."""
     text = re.sub(r"^```(json)?\s*|```\s*$", "", text.strip()).strip()
-    # attempt 1: direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # attempt 2: fix unescaped newlines in string values
     try:
         return json.loads(re.sub(r'(?<!\\)\n', r'\\n', text))
     except json.JSONDecodeError:
         pass
-    # attempt 3: extract JSON object
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         try:
@@ -281,34 +351,17 @@ def _parse_json(text):
     return None
 
 
-def _clean_latex(latex):
-    """Strip things the model shouldn't have added — server handles these."""
-    s = latex.strip()
-    # remove trailing \hline (possibly multiple)
-    s = re.sub(r'(\\hline\s*)+$', '', s).strip()
-    # remove any Total for Question line
-    s = re.sub(r'\\hfill\s*\\textbf\{[^}]*Total for Question[^}]*\}\s*', '', s).strip()
-    # remove leading \item if model added it
-    s = re.sub(r'^\\item\s*', '', s).strip()
-    # remove trailing \hline again after other removals
-    s = re.sub(r'(\\hline\s*)+$', '', s).strip()
-    return s
-
-
 def _box2d_to_px(box_2d, W, H, pad_frac=0.02):
-    """Convert Gemini box_2d [ymin,xmin,ymax,xmax] (0-1000) to pixel rect."""
     ymin, xmin, ymax, xmax = box_2d
     for v in (ymin, xmin, ymax, xmax):
         if not (0 <= v <= 1000):
             return None
     if ymin >= ymax or xmin >= xmax:
         return None
-    left   = int(xmin / 1000 * W)
-    top    = int(ymin / 1000 * H)
-    right  = int(xmax / 1000 * W)
-    bottom = int(ymax / 1000 * H)
-    px, py = int(pad_frac * W), int(pad_frac * H)
-    return (max(0, left - px), max(0, top - py), min(W, right + px), min(H, bottom + py))
+    left = int(xmin/1000*W); top = int(ymin/1000*H)
+    right = int(xmax/1000*W); bottom = int(ymax/1000*H)
+    px, py = int(pad_frac*W), int(pad_frac*H)
+    return (max(0,left-px), max(0,top-py), min(W,right+px), min(H,bottom+py))
 
 
 # ============================================================================
@@ -328,22 +381,19 @@ def export(paper: PaperIn):
     global_idx = 0
     items, packaged = [], {}
     for qi, q in enumerate(paper.questions, start=1):
-        body = _clean_latex(q.body)
+        body = (q.body or "").strip()
         for local_i, tmp in enumerate(q.tempImageNames, start=1):
             global_idx += 1
             final = f"{global_idx}.png"
             body = body.replace(f"__FIGURE_{local_i}__", final)
             if tmp in FIGURE_STORE:
                 packaged[final] = FIGURE_STORE[tmp]
-        # assemble: \item + body + total marks + \hline
         total = ""
         if q.marks is not None:
             total = f"\n\n\\hfill \\textbf{{(Total for Question {qi} is {q.marks} marks)}}"
         items.append(f"\\item\n{body}{total}\n\\hline")
 
     tex = _build_doc(paper, "\n\n".join(items))
-
-    # verify all referenced images are present
     refs = re.findall(r"\\includegraphics\[[^\]]*\]\{([^}]+)\}", tex)
     missing = [r for r in refs if r not in packaged]
     if missing:
@@ -362,23 +412,13 @@ def export(paper: PaperIn):
 def _build_doc(p, items):
     return (
         "\\documentclass[a4paper,12pt]{article}\n"
-        "\\usepackage{amsmath}\n"
-        "\\usepackage{amssymb}\n"
-        "\\usepackage[utf8]{inputenc}\n"
-        "\\usepackage{geometry}\n"
-        "\\usepackage{array}\n"
-        "\\usepackage{graphicx}\n"
-        "\\geometry{margin=1in}\n\n"
-        "\\begin{document}\n"
+        "\\usepackage{amsmath}\n\\usepackage{amssymb}\n\\usepackage[utf8]{inputenc}\n"
+        "\\usepackage{geometry}\n\\usepackage{array}\n\\usepackage{graphicx}\n"
+        "\\geometry{margin=1in}\n\n\\begin{document}\n"
         f"\\title{{\\LARGE \\textbf{{{p.title}}}}}\n"
         f"\\author{{\\large {p.author} \\\\ \\text{{{p.cred}}} \\\\ {p.inst} \\\\ \\textbf{{Contact: {p.contact}}}}}\n"
-        f"\\date{{{p.date}}}\n"
-        "\\maketitle\n"
-        "\\hline\n"
-        "\\begin{enumerate}\n\n"
-        f"{items}\n\n"
-        "\\end{enumerate}\n\n"
-        "\\end{document}\n"
+        f"\\date{{{p.date}}}\n\\maketitle\n\\hline\n\\begin{{enumerate}}\n\n"
+        f"{items}\n\n\\end{{enumerate}}\n\n\\end{{document}}\n"
     )
 
 
