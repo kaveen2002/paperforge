@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PaperForge — Exam Paper Builder</title>
+<style>
+  :root{
+    --ink:#1a1714; --paper:#f4efe6; --accent:#b4451f; --accent2:#1f5c4d;
+    --line:#cdbfa8; --muted:#7a6f5d; --ok:#1f5c4d; --warn:#9a6b00;
+    --shadow:0 1px 0 #fff8, 0 12px 30px -12px rgba(40,30,15,.4);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    background:radial-gradient(circle at 12% 8%, #fbf7ef, transparent 40%),
+      radial-gradient(circle at 88% 92%, #efe6d6, transparent 45%), var(--paper);
+    color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:24px 18px 130px}
+  header.brand{display:flex;align-items:baseline;gap:14px;margin:8px 0 26px;flex-wrap:wrap}
+  .logo{font-weight:800;letter-spacing:-.5px;font-size:30px;color:var(--ink);position:relative}
+  .logo b{color:var(--accent)}
+  .logo:after{content:"";position:absolute;left:0;right:0;bottom:-6px;height:3px;background:linear-gradient(90deg,var(--accent),transparent)}
+  .tag{font-size:14px;color:var(--muted);font-style:italic}
+  .card{background:linear-gradient(180deg,#fffdf8,#f7f1e6);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:18px;box-shadow:var(--shadow)}
+  .card h2{margin:0 0 14px;font-size:18px;letter-spacing:.3px;display:flex;align-items:center;gap:9px}
+  .card h2 .n{background:var(--accent);color:#fff;font-size:13px;font-weight:700;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-family:ui-sans-serif,system-ui}
+  label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:0 0 5px}
+  input[type=text], textarea, select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fffdf8;font-family:inherit;font-size:15px;color:var(--ink)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:620px){.grid2{grid-template-columns:1fr}}
+  .field{margin-bottom:12px}
+  button{font-family:ui-sans-serif,system-ui;font-weight:600;cursor:pointer;border:none;border-radius:9px;padding:10px 16px;font-size:14px;transition:transform .08s,filter .15s}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover:not(:disabled){filter:brightness(1.06)}
+  .btn-ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  .btn-teal{background:var(--accent2);color:#fff}
+  .btn-sm{padding:6px 11px;font-size:13px}
+  .btn-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .q-card{background:#fffdf8;border:1px solid var(--line);border-left:5px solid var(--accent2);border-radius:12px;margin-bottom:16px;overflow:hidden}
+  .q-head{display:flex;align-items:center;gap:10px;padding:12px 14px;background:#f3ecdd;border-bottom:1px solid var(--line)}
+  .q-head .qnum{font-weight:700;font-size:15px}
+  .q-head .pill{font-size:11px;font-family:ui-sans-serif,system-ui;padding:3px 9px;border-radius:20px;font-weight:600}
+  .pill.empty{background:#e7ddc9;color:var(--muted)}
+  .pill.processing{background:#f6e6c2;color:var(--warn)}
+  .pill.ready{background:#cfe5dd;color:var(--ok)}
+  .pill.error{background:#f3d2c4;color:#a23a17}
+  .q-head .spacer{flex:1}
+  .q-head button{background:none;color:var(--muted);font-size:18px;line-height:1;padding:4px 8px}
+  .q-head button:hover{color:var(--accent)}
+  .q-body{padding:14px}
+  .dropzone{border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;color:var(--muted);font-size:14px;cursor:pointer;background:#fbf7ee;transition:.15s}
+  .dropzone:hover{border-color:var(--accent);color:var(--accent);background:#fff}
+  .thumbs{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  .thumb{position:relative;width:90px;height:90px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .thumb img{width:100%;height:100%;object-fit:cover}
+  .thumb .nm{position:absolute;bottom:0;left:0;right:0;background:#000a;color:#fff;font-size:10px;text-align:center;font-family:ui-monospace,monospace}
+  .thumb .x{position:absolute;top:2px;right:2px;background:#000a;color:#fff;border-radius:50%;width:18px;height:18px;display:grid;place-items:center;cursor:pointer;font-size:12px;font-family:ui-sans-serif}
+  .crops{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  .crop{border:1px solid var(--accent2);border-radius:8px;padding:6px;background:#f2f8f5;text-align:center}
+  .crop img{max-width:130px;max-height:130px;display:block;border-radius:4px}
+  .crop .cap{font-size:10px;font-family:ui-monospace,monospace;color:var(--accent2);margin-top:4px}
+  .latex-out{margin-top:12px;background:#211c17;color:#e8dcc6;border-radius:9px;padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto}
+  .marks-row{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+  .marks-row input{width:90px}
+  .note{font-size:12px;color:var(--muted);font-style:italic;margin-top:8px}
+  .warnbox{background:#f8edcf;border:1px solid #e3c98a;color:#7a5800;padding:9px 12px;border-radius:8px;font-size:13px;margin-top:10px}
+  .errbox{background:#f6ddd1;border:1px solid #d99877;color:#8c3414;padding:9px 12px;border-radius:8px;font-size:13px;margin-top:10px}
+  .add-q{width:100%;border:2px dashed var(--accent);background:#fff7f2;color:var(--accent);border-radius:12px;padding:16px;font-size:15px;font-weight:600}
+  .add-q:hover{background:#ffeee5}
+  .exportbar{position:fixed;left:0;right:0;bottom:0;background:#fffdf8ee;backdrop-filter:blur(8px);border-top:1px solid var(--line);padding:12px 18px;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;z-index:50}
+  .exportbar .meta{font-size:13px;color:var(--muted);font-family:ui-sans-serif,system-ui}
+  dialog{border:none;border-radius:14px;padding:0;max-width:760px;width:92%;box-shadow:0 30px 80px -20px #0008}
+  dialog::backdrop{background:#1a140cbb}
+  .modal-head{padding:14px 18px;background:#211c17;color:#f4efe6;display:flex;justify-content:space-between;align-items:center}
+  .modal-head h3{margin:0;font-size:16px;font-family:ui-sans-serif,system-ui}
+  .modal-head button{background:none;color:#f4efe6;font-size:20px}
+  .modal-body .latex-out{margin:0;border-radius:0;max-height:60vh}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid #fff6;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="brand">
+    <span class="logo">Paper<b>Forge</b></span>
+    <span class="tag">— screenshot in, exam-ready LaTeX + figures out</span>
+  </header>
+
+  <div class="card">
+    <h2><span class="n">1</span> Paper details</h2>
+    <div class="field"><label>Paper title</label><input type="text" id="p_title" value="Grade 09 Edexcel Physics\\ Target Paper 9"></div>
+    <div class="grid2">
+      <div class="field"><label>Grade / Level</label><input type="text" id="p_grade" value="Grade 09"></div>
+      <div class="field"><label>Date</label><input type="text" id="p_date" value="25/05/2026"></div>
+    </div>
+    <div class="field"><label>Author name</label><input type="text" id="p_author" value="Kaveen Weerasinghe"></div>
+    <div class="field"><label>Credentials line</label><input type="text" id="p_cred" value="BSc (Hons) in Electronic and Telecommunication Engineering (UG)"></div>
+    <div class="grid2">
+      <div class="field"><label>Institution</label><input type="text" id="p_inst" value="University of Moratuwa"></div>
+      <div class="field"><label>Contact</label><input type="text" id="p_contact" value="+94-76-5527-466"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">2</span> Questions</h2>
+    <p style="margin:0 0 14px;font-size:13px;color:var(--muted);line-height:1.5">
+      Add a slot per question, drop its screenshot in, and tap Convert. The server reads the question
+      into LaTeX, extracts the total mark, and auto-crops every figure — named to match the code.
+    </p>
+    <div id="questions"></div>
+    <button class="add-q" id="addQ">+ Add Question</button>
+  </div>
+</div>
+
+<div class="exportbar">
+  <span class="meta" id="meta">0 questions · 0 figures · 0 marks</span>
+  <button class="btn-teal" id="previewBtn">Preview LaTeX</button>
+  <button class="btn-primary" id="exportBtn">Export .tex + figures (zip)</button>
+</div>
+
+<dialog id="previewModal">
+  <div class="modal-head"><h3>Full paper — LaTeX</h3><button onclick="previewModal.close()">✕</button></div>
+  <div class="modal-body"><div class="latex-out" id="fullLatex"></div></div>
+  <div style="padding:12px 18px;display:flex;gap:10px;justify-content:flex-end;background:#f3ecdd">
+    <button class="btn-ghost" id="copyLatex">Copy</button>
+    <button class="btn-primary" onclick="previewModal.close()">Done</button>
+  </div>
+</dialog>
+
+<script>
+/* PaperForge front-end — talks to the SAME origin it is served from.
+   When served by server.py, API_BASE = "" works because the endpoints
+   (/convert, /export) live on the same server. */
+const API_BASE = ""; // same-origin
+
+const state = { questions: [] };
+let qSeq = 0;
+const $ = s => document.querySelector(s);
+const qContainer = $('#questions');
+const previewModal = $('#previewModal');
+
+function renumber(){
+  let img = 0;
+  state.questions.forEach((q,i)=>{ q.number=i+1; q.images.forEach(im=>{ img++; im.filename=img+'.png'; }); });
+  return img;
+}
+
+function fileToB64(file){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
+}
+
+/* call backend /convert for one question (sends first image; multi-image handled server-side per figure) */
+async function convertQuestion(q){
+  q.status='processing'; q.error=null; render();
+  try{
+    const fd = new FormData();
+    fd.append('image', q.rawFiles[0]);          // the screenshot
+    fd.append('questionNumber', q.number);
+    const res = await fetch(API_BASE+'/convert',{method:'POST',body:fd});
+    if(!res.ok){ throw new Error('Server '+res.status+': '+(await res.text()).slice(0,200)); }
+    const data = await res.json();
+    q.latex = data.latex || '';
+    q.totalMarks = data.totalMarks;
+    q.marksFound = data.marksFound;
+    q.crops = data.crops || [];                 // [{tempName, dataUrl?}] previews
+    q.tempImageNames = (data.crops||[]).map(c=>c.tempName);
+    q.status='ready';
+  }catch(e){
+    q.status='error'; q.error=e.message;
+  }
+  render();
+}
+
+function buildItemPreview(q){
+  let body = q.latex||'% (not converted)';
+  // show final filenames in preview by replacing placeholders
+  (q.tempImageNames||[]).forEach((t,i)=>{ body = body.replace(`__FIGURE_${i+1}__`, q.images[i]?q.images[i].filename:`__FIGURE_${i+1}__`); });
+  const total = q.totalMarks!=null ? `\n\\hfill \\textbf{(Total for Question ${q.number} is ${q.totalMarks} marks)}` : '';
+  return `\\item\n${body}\n${total}\n\\hline`;
+}
+
+function render(){
+  const totalImgs = renumber();
+  qContainer.innerHTML='';
+  state.questions.forEach(q=>{
+    const card=document.createElement('div'); card.className='q-card';
+    const statusTxt={empty:'awaiting image',processing:'converting…',ready:'ready',error:'error'}[q.status];
+    const pillExtra = q.status==='processing'?'<span class="spinner"></span>':'';
+    card.innerHTML=`
+      <div class="q-head">
+        <span class="qnum">Question ${q.number}</span>
+        <span class="pill ${q.status}">${pillExtra}${statusTxt}</span>
+        <span class="spacer"></span>
+        <button data-act="up" title="Up">↑</button>
+        <button data-act="down" title="Down">↓</button>
+        <button data-act="del" title="Delete">🗑</button>
+      </div>
+      <div class="q-body">
+        <div class="dropzone" data-act="pick">Tap to add image(s) for Question ${q.number}</div>
+        <input type="file" accept="image/*" multiple style="display:none" data-act="file">
+        <div class="thumbs"></div>
+        ${q.images.length?`<div class="btn-row" style="margin-top:12px">
+          <button class="btn-primary btn-sm" data-act="convert" ${q.status==='processing'?'disabled':''}>${q.status==='ready'?'Re-convert':'Convert to LaTeX'}</button></div>`:''}
+        <div class="dyn"></div>
+      </div>`;
+    const thumbs=card.querySelector('.thumbs');
+    q.images.forEach((im,idx)=>{ const t=document.createElement('div'); t.className='thumb';
+      t.innerHTML=`<img src="${im.dataUrl}"><span class="nm">${im.filename}</span><span class="x" data-rm="${idx}">✕</span>`; thumbs.appendChild(t); });
+
+    const dyn=card.querySelector('.dyn');
+    if(q.status==='error'){ dyn.innerHTML=`<div class="errbox">⚠ ${q.error}</div>`; }
+    if(q.status==='ready'){
+      const cropsHtml = (q.crops&&q.crops.length)? `<div class="crops">${q.crops.map((c,i)=>`
+          <div class="crop">${c.dataUrl?`<img src="${c.dataUrl}">`:''}<div class="cap">${q.images[i]?q.images[i].filename:c.tempName}</div></div>`).join('')}</div>`:'';
+      const marksWarn=q.marksFound===false?`<div class="warnbox">⚠ No total-mark line found in the image — enter it manually.</div>`:'';
+      dyn.innerHTML=`
+        ${cropsHtml}
+        ${marksWarn}
+        <div class="marks-row"><label style="margin:0">Total marks</label>
+          <input type="text" value="${q.totalMarks??''}" data-act="marks">
+          <span class="note">${q.marksFound?'auto-read from image':'manual'}</span></div>
+        <div class="latex-out">${esc(buildItemPreview(q))}</div>`;
+    }
+
+    card.querySelector('[data-act="pick"]').onclick=()=>card.querySelector('[data-act="file"]').click();
+    card.querySelector('[data-act="file"]').onchange=e=>addImages(q,e.target.files);
+    card.querySelector('[data-act="up"]').onclick=()=>move(q,-1);
+    card.querySelector('[data-act="down"]').onclick=()=>move(q,1);
+    card.querySelector('[data-act="del"]').onclick=()=>{state.questions=state.questions.filter(x=>x!==q);render();};
+    const conv=card.querySelector('[data-act="convert"]'); if(conv) conv.onclick=()=>convertQuestion(q);
+    const marks=card.querySelector('[data-act="marks"]'); if(marks) marks.onchange=e=>{q.totalMarks=e.target.value;render();};
+    thumbs.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{q.images.splice(+b.dataset.rm,1);q.rawFiles.splice(+b.dataset.rm,1);if(!q.images.length)q.status='empty';render();});
+    qContainer.appendChild(card);
+  });
+  $('#meta').textContent=`${state.questions.length} question${state.questions.length!==1?'s':''} · ${totalImgs} figure${totalImgs!==1?'s':''} · ${totalMarks()} marks`;
+}
+
+function totalMarks(){return state.questions.reduce((s,q)=>s+(parseInt(q.totalMarks)||0),0);}
+function move(q,d){const i=state.questions.indexOf(q),j=i+d;if(j<0||j>=state.questions.length)return;[state.questions[i],state.questions[j]]=[state.questions[j],state.questions[i]];render();}
+async function addImages(q,files){ for(const f of files){ const url=await fileToB64(f); q.images.push({dataUrl:url,filename:''}); q.rawFiles.push(f);} render(); }
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+/* ---- export: send whole paper to /export, download the zip the server returns ---- */
+async function exportPaper(){
+  renumber();
+  const payload={
+    title:$('#p_title').value, author:$('#p_author').value, cred:$('#p_cred').value,
+    inst:$('#p_inst').value, contact:$('#p_contact').value, date:$('#p_date').value,
+    questions: state.questions.map(q=>({
+      body: q.latex||'', marks: q.totalMarks!=null&&q.totalMarks!==''?parseInt(q.totalMarks):null,
+      tempImageNames: q.tempImageNames||[]
+    }))
+  };
+  $('#exportBtn').disabled=true; $('#exportBtn').textContent='Bundling…';
+  try{
+    const res=await fetch(API_BASE+'/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!res.ok){ throw new Error('Export failed '+res.status+': '+(await res.text()).slice(0,200)); }
+    const blob=await res.blob();
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=(($('#p_title').value||'paper').replace(/[^a-z0-9]+/gi,'_').slice(0,40))+'_export.zip'; a.click();
+  }catch(e){ alert(e.message); }
+  $('#exportBtn').disabled=false; $('#exportBtn').textContent='Export .tex + figures (zip)';
+}
+
+$('#addQ').onclick=()=>{ state.questions.push({images:[],rawFiles:[],latex:'',totalMarks:null,status:'empty',marksFound:null,crops:[],tempImageNames:[]}); render(); };
+$('#previewBtn').onclick=()=>{ $('#fullLatex').textContent=fullLatexPreview(); previewModal.showModal(); };
+$('#copyLatex').onclick=()=>{ navigator.clipboard.writeText(fullLatexPreview()); $('#copyLatex').textContent='Copied ✓'; setTimeout(()=>$('#copyLatex').textContent='Copy',1500); };
+$('#exportBtn').onclick=exportPaper;
+
+function fullLatexPreview(){
+  renumber();
+  const items=state.questions.map(buildItemPreview).join('\n\n');
+  return `\\documentclass[a4paper,12pt]{article}
+\\usepackage{amsmath}\\usepackage{amssymb}\\usepackage[utf8]{inputenc}
+\\usepackage{geometry}\\usepackage{array}\\usepackage{graphicx}\\usepackage{xcolor}
+\\geometry{margin=1in}
+\\begin{document}
+\\title{\\LARGE \\textbf{${$('#p_title').value}}}
+\\author{\\large ${$('#p_author').value} \\\\ \\text{${$('#p_cred').value}} \\\\ ${$('#p_inst').value} \\\\ \\textbf{Contact: ${$('#p_contact').value}}}
+\\date{${$('#p_date').value}}
+\\maketitle
+\\hline
+\\begin{enumerate}
+
+${items}
+
+\\end{enumerate}
+\\end{document}`;
+}
+
+$('#addQ').click();
+</script>
+</body>
+</html>
