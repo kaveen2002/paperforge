@@ -29,7 +29,7 @@ from PIL import Image
 import google.generativeai as genai
 
 # ---- model config ----------------------------------------------------------
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-2.5-flash-lite"
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
 app = FastAPI(title="PaperForge (Gemini)")
