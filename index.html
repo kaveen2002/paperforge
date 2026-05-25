@@ -154,12 +154,12 @@ function fileToB64(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
 }
 
-/* call backend /convert for one question (sends first image; multi-image handled server-side per figure) */
+/* call backend /convert for one question — sends ALL images for this question */
 async function convertQuestion(q){
   q.status='processing'; q.error=null; render();
   try{
     const fd = new FormData();
-    fd.append('image', q.rawFiles[0]);          // the screenshot
+    q.rawFiles.forEach(f => fd.append('images', f));   // all screenshots
     fd.append('questionNumber', q.number);
     const res = await fetch(API_BASE+'/convert',{method:'POST',body:fd});
     if(!res.ok){ throw new Error('Server '+res.status+': '+(await res.text()).slice(0,200)); }
