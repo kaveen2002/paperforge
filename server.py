@@ -95,6 +95,12 @@ HOUSE STYLE RULES (follow exactly):
 - Fill-in answer lines use \dotfill, e.g.  \[ x = \dotfill \]
 - NEVER invent the \begin{boxed} environment. NEVER use \boxed except inside maths mode for a real boxed value.
 - Do NOT add the \item line; do NOT add the (Total for Question ...) line; the server adds both.
+- PACKAGE LIMIT: the document preamble loads ONLY these packages:
+  amsmath, amssymb, inputenc, geometry, array, graphicx, xcolor.
+  Use ONLY commands available from these (and base LaTeX). NEVER use a command that needs another
+  package. In particular: do NOT use tikz, pgfplots, siunitx (\\SI, \\si), cancel, multirow, multicolumn
+  beyond base, booktabs (\\toprule etc.), enumitem options, or chemfig. Write units as plain text
+  (e.g. m/s, Hz, \\Omega from amssymb), vectors with \\vec or \\mathbf, and degrees as ^\\circ.
 
 WORKED EXAMPLE (image: a part (a) multiple choice about walking speed, then part (b) a spring-balance
 figure with a word box). Correct "latex" value:
