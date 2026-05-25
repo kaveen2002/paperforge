@@ -1,5 +1,5 @@
 fastapi
 uvicorn
-anthropic
+google-generativeai
 pillow
 python-multipart
