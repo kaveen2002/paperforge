@@ -180,8 +180,11 @@ function buildItemPreview(q){
   let body = q.latex||'% (not converted)';
   // show final filenames in preview by replacing placeholders
   (q.tempImageNames||[]).forEach((t,i)=>{ body = body.replace(`__FIGURE_${i+1}__`, q.images[i]?q.images[i].filename:`__FIGURE_${i+1}__`); });
-  const total = q.totalMarks!=null ? `\n\\hfill \\textbf{(Total for Question ${q.number} is ${q.totalMarks} marks)}` : '';
-  return `\\item\n${body}\n${total}\n\\hline`;
+  // strip any \hline or Total line the model added (server handles these)
+  body = body.replace(/\\hline\s*$/,'').trim();
+  body = body.replace(/\\hfill\s*\\textbf\{.*Total for Question.*\}\s*$/,'').trim();
+  const total = q.totalMarks!=null ? `\n\n\\hfill \\textbf{(Total for Question ${q.number} is ${q.totalMarks} marks)}` : '';
+  return `\\item\n${body}${total}\n\\hline`;
 }
 
 function render(){
