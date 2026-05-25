@@ -80,13 +80,14 @@ OUTPUT: STRICT VALID JSON ONLY (no prose, no fences). Escape all special chars i
    - Degrees: ^\circ. Currency: pounds directly or \pounds.
    - Aligned equations: \begin{aligned}...\end{aligned} inside \[ \].
 
-5. WORKING SPACE - match marks to space:
-   - 1 mark: \vspace{1cm} or \vspace{2cm}
-   - 2 marks: \vspace{2cm} or \vspace{3cm}
-   - 3 marks: \vspace{3cm} or \vspace{4cm}
-   - 4 marks: \vspace{4cm} or \vspace{5cm}
-   - 5+ marks: \vspace{5cm} to \vspace{8cm}
-   NEVER exceed 10cm. Small gaps (0.3cm) for visual spacing between conditions.
+5. WORKING SPACE - match marks to space (be generous for calculations):
+   - 1 mark (state/name/write down): \vspace{2cm}
+   - 2 marks (calculate/work out): \vspace{3cm}
+   - 3 marks (explain/describe/calculate): \vspace{4cm}
+   - 4 marks: \vspace{5cm}
+   - 5+ marks: \vspace{6cm} to \vspace{8cm}
+   NEVER exceed 10cm. Use \vspace{0.3cm} for small visual gaps between conditions/statements.
+   Add \vspace{0.5cm} after answer blank lines.
 
 6. TABLES:
    \begin{center}
@@ -116,9 +117,14 @@ OUTPUT: STRICT VALID JSON ONLY (no prose, no fences). Escape all special chars i
    \end{tabular}
    \end{center}
 
-9. ANSWER LINES: \underline{\hspace{Ncm}} or \rule{Ncm}{0.15mm}:
+9. ANSWER LINES: Place answer blanks on their own line, right-aligned with \hfill:
+   \hfill wave speed = \underline{\hspace{5cm}} m/s
+   or:
    \hfill \textbf{Answer:} \underline{\hspace{5cm}}
+   or for labelled values:
+   \hfill \( x = \) \underline{\hspace{4cm}}
    Use \dotfill for fill-in-blank in display maths: \[ x = \dotfill \]
+   ALWAYS add \vspace{0.5cm} AFTER an answer blank line before the next part.
 
 10. BULLET LISTS: \begin{itemize} \item ... \end{itemize} for bullet points.
 
@@ -151,21 +157,25 @@ Find the 12th term. \hfill (5)
 
 \hline
 
-EX2 — Sub-parts:
+EX2 — Physics with calculate + answer blank:
 
 \begin{enumerate}
-  \item Given that
-  \[
-    \frac{y^5 \times y^n}{y^6} = y^{13},
-  \]
-  work out the value of \(n\). \hfill (2)
-  \vspace{1cm}
+  \item A sound wave in air travels a distance of 220\,m in a time of 0.70\,s.
+  \begin{enumerate}
+    \item State the equation linking speed, distance and time. \hfill (1)
+    \vspace{2cm}
 
-  \item Work out
-  \[
-    \frac{9.6 \times 10^{141} + 6.4 \times 10^{140}}{3.2 \times 10^{16}}.
-  \]
-  Give your answer in standard form. \hfill (2)
+    \item Calculate the speed of the sound wave in air. \hfill (2)
+    \vspace{3cm}
+
+    \hfill wave speed = \underline{\hspace{5cm}} m/s
+    \vspace{0.5cm}
+  \end{enumerate}
+
+  \item Sound waves are longitudinal waves.
+  Water waves are transverse waves.
+
+  Describe the difference between longitudinal waves and transverse waves. \hfill (3)
   \vspace{4cm}
 \end{enumerate}
 \hline
