@@ -47,106 +47,35 @@ def home():
 FIGURE_STORE = {}   # tempName -> PNG bytes
 
 SYSTEM_PROMPT = r"""
-You convert a screenshot of ONE exam question into Edexcel-style LaTeX. Match the house style EXACTLY.
+Convert a screenshot of ONE exam question into Edexcel-style LaTeX. Return STRICT VALID JSON only.
 
-OUTPUT: STRICT JSON ONLY (no prose, no markdown fences):
+JSON shape (ensure all strings are properly escaped — use \\n for newlines inside strings):
 {
-  "latex": "<question body>",
+  "latex": "<question body as a single JSON string>",
   "totalMarks": <integer or null>,
-  "figures": [ {"box_2d": [ymin, xmin, ymax, xmax], "label": "<description>", "image_index": 0} ]
+  "figures": [ {"box_2d": [ymin, xmin, ymax, xmax], "label": "desc", "image_index": 0} ]
 }
 
-=== CORE RULES ===
+RULES:
+- Copy wording EXACTLY. Never rephrase.
+- "latex" = body only. Do NOT include \item (server adds it). Do NOT include "Total for Question" line.
+- Sub-parts: \begin{enumerate}\item...\end{enumerate}. Let enumerate auto-label.
+  NEVER type (a), (b), (i), (ii) manually at start of \item.
+- Marks: \hfill (N) after text, before \vspace.
+- Maths: inline \( \), display \[ \]. Use \dfrac inline, \frac in display.
+- \vspace by marks: 1-mark=2cm, 2-mark=3cm, 3-mark=4cm, 4-mark=5cm, 5+=6cm. Max 8cm.
+- Tables: \begin{center}\begin{tabular}{|c|c|}\hline...\end{tabular}\end{center}
+- MCQ: tabular with |c|l|, rows A/B/C/D.
+- Word boxes: single-row tabular.
+- Answer lines: \underline{\hspace{4cm}} or \dotfill
+- Bullet lists: \begin{itemize}\item...\end{itemize}
+- Figures: \begin{center}\includegraphics[width=0.6\textwidth]{__FIGURE_n__}\end{center}
+  NEVER add captions. Width 0.5-0.8\textwidth.
+- End with \hline separator.
+- Packages available: amsmath, amssymb, graphicx, array, geometry, xcolor. No others.
+- NEVER use \begin{boxed} or tikz or siunitx.
 
-1. WORDING: Copy EXACTLY as shown. Never change wording, punctuation, symbols. Never rephrase or skip.
-
-2. STRUCTURE:
-   - "latex" = question body only.
-   - Do NOT write \item at the start (server adds it).
-   - Do NOT write a "Total for Question" line (server adds it).
-   - Sub-parts: nested \begin{enumerate}...\end{enumerate}, let enumerate auto-label.
-     NEVER manually type (a), (b), (i), (ii) at start of \item.
-   - End each question with \hline as separator.
-
-3. MARKS: Each part ends with \hfill (N) AFTER question text, BEFORE \vspace:
-   Work out the value of x. \hfill (3)
-   \vspace{4cm}
-
-4. MATHS:
-   - Inline: \( ... \), use \dfrac for inline fractions.
-   - Display: \[ ... \], use \frac in display.
-   - Units: plain text (m/s, km, cm, Hz, g/cm^3). Greek: \Omega, \pi.
-   - Vectors: \mathbf{a}, \vec{a}, \overrightarrow{OA}.
-   - Degrees: ^\circ. Currency: use pounds directly or \pounds.
-   - Aligned equations: \begin{aligned}...\end{aligned} inside \[ \].
-
-5. WORKING SPACE - match marks to space:
-   - 1 mark (state/write down): \vspace{1cm} or \vspace{2cm}
-   - 2 marks: \vspace{2cm} or \vspace{3cm}
-   - 3 marks: \vspace{3cm} or \vspace{4cm}
-   - 4 marks: \vspace{4cm} or \vspace{5cm}
-   - 5+ marks: \vspace{5cm} to \vspace{8cm}
-   NEVER exceed 10cm. Be conservative. Small gaps (0.3cm) for visual spacing between conditions.
-
-6. TABLES:
-   \begin{center}
-   \begin{tabular}{|c|c|}
-   \hline
-   \textbf{Header} & \textbf{Header} \\ \hline
-   data & data \\ \hline
-   \end{tabular}
-   \end{center}
-
-7. MULTIPLE CHOICE (A/B/C/D):
-   \begin{center}
-   \begin{tabular}{|c|l|}
-   \hline
-   A & option \\ \hline
-   B & option \\ \hline
-   C & option \\ \hline
-   D & option \\ \hline
-   \end{tabular}
-   \end{center}
-
-8. WORD BOXES:
-   \begin{center}
-   \begin{tabular}{|c|c|c|c|}
-   \hline
-   word1 & word2 & word3 & word4 \\ \hline
-   \end{tabular}
-   \end{center}
-
-9. ANSWER LINES: Use \underline{\hspace{Ncm}} or \rule{Ncm}{0.15mm}:
-   \hfill \textbf{Answer:} \underline{\hspace{5cm}}
-   or for labelled answers:
-   \hfill \( x = \) \underline{\hspace{4cm}}
-   Use \dotfill for fill-in-the-blank inside display maths: \[ x = \dotfill \]
-
-10. BULLET LISTS: Use \begin{itemize} \item ... \end{itemize} when the original has bullet points.
-
-11. FIGURES: Insert at correct position:
-    \begin{center}
-    \includegraphics[width=0.6\textwidth]{__FIGURE_n__}
-    \end{center}
-    n=1,2,3 in order. Server replaces __FIGURE_n__ with real filename.
-    - NEVER add a caption or write the filename.
-    - Write "Figure 1" ONLY if it appears in the actual question wording.
-    - Width: 0.45-0.55 for small diagrams, 0.6-0.7 for medium, 0.75-0.9 for graphs/grids.
-
-12. LINE BREAKS: Use \\ only for genuine line breaks (listing conditions). NOT after every sentence.
-    Use \vspace{0.3cm} for small visual gaps between conditions/statements.
-    Use \noindent before paragraphs that should not indent.
-
-13. PACKAGES: Preamble loads ONLY: amsmath, amssymb, inputenc, geometry, array, graphicx, xcolor.
-    NEVER use tikz, siunitx, booktabs, enumitem, cancel, chemfig.
-    You MAY use base LaTeX: itemize, tabbing, minipage, flushright, quote, noindent, null, medskip.
-
-14. FORBIDDEN: \begin{boxed}, manual (a)/(b) labels, explanations, commentary, excessive spacing.
-
-=== EXAMPLES ===
-
-EX1 — Simple question:
-
+EXAMPLE:
 The 3rd term of an arithmetic series is 25.
 
 The sum of the first 10 terms is 350.
@@ -157,125 +86,11 @@ Find the 12th term. \hfill (5)
 
 \hline
 
-EX2 — Sub-parts with algebra:
-
-\begin{enumerate}
-  \item Given that
-  \[
-    \frac{y^5 \times y^n}{y^6} = y^{13},
-  \]
-  work out the value of \(n\). \hfill (2)
-
-  \vspace{1cm}
-
-  \item Work out
-  \[
-    \frac{9.6 \times 10^{141} + 6.4 \times 10^{140}}{3.2 \times 10^{16}}.
-  \]
-  Give your answer in standard form. \hfill (2)
-  \vspace{4cm}
-\end{enumerate}
-\hline
-
-EX3 — Question with image and answer line:
-
-The diagram shows a shape made up of three semicircles, enclosing a right-angled triangle.
-
-\begin{center}
-\includegraphics[width=0.6\textwidth]{__FIGURE_1__}
-\end{center}
-
-\( AB, BC \text{ and } CA \) are each the diameter of a semicircle.
-
-\( BC = CA = 6\,\text{cm} \)
-
-Work out the perimeter of the shape.
-Give your answer correct to one decimal place.
-
-\vspace{4cm}
-
-\hfill \underline{\hspace{3cm}} cm \hfill (4)
-
-\hline
-
-EX4 — Functions:
-
-\begin{enumerate}
-  \item $f(x)=\dfrac{2}{x},\quad g(x)=\dfrac{x+1}{x}.$\\
-  State which value of $x$ cannot be included in the domain of $f$ or $g$.
-  \vspace{2cm}\hfill (1)
-
-  \item Solve the equation
-  \[
-    g\bigl(f(a)\bigr)=3.
-  \]
-  \vspace{4cm}\hfill (2)
-
-  \item Express the inverse function $g^{-1}$ in the form $g^{-1}(x)$.
-  \vspace{5cm}\hfill (2)
-\end{enumerate}
-\hline
-
-EX5 — Vectors:
-
-Vector \( \mathbf{m} = \begin{pmatrix} 2 \\ k \end{pmatrix} \) and vector \( \mathbf{n} = \begin{pmatrix} 3 \\ 11 \end{pmatrix} \)
-
-\medskip
-
-Vector \( 2\mathbf{m} + \mathbf{n} \) is parallel to \( \begin{pmatrix} 1 \\ -1 \end{pmatrix} \)
-
-\medskip
-
-Find the value of \( k \). \hfill (4)
-
-\vspace{3cm}
-
-\hline
-
-EX6 — Bearings with bullet list:
-
-The diagram shows the positions of three villages, \( A, B \) and \( C \).
-
-\begin{center}
-\includegraphics[width=0.7\textwidth]{__FIGURE_1__}
-\end{center}
-
-\begin{itemize}
-    \item The bearing of \( B \) from \( A \) is \( 054^\circ \)
-    \item The bearing of \( C \) from \( B \) is \( 132^\circ \)
-\end{itemize}
-
-Melur walks from \( A \) to \( B \)
-She then walks from \( B \) to \( C \) and from \( C \) to \( A \)
-
-\vspace{0.3cm}
-
-Melur walks at an average speed of 6 km/h
-
-\vspace{0.3cm}
-
-Work out the total time Melur takes.
-Give your answer in hours and minutes.
-
-\vspace{3.5cm}
-
-\hfill \underline{\hspace{2.5cm}} hours \quad \underline{\hspace{2.5cm}} minutes \hfill (5)
-
-\hline
-
-=== FIGURE BOUNDING BOXES ===
-
-Use Gemini's native object detection format for figures:
-- For EVERY diagram/photo/figure (NOT tables, NOT text, NOT word boxes, NOT equations),
-  return a "box_2d" in the format [ymin, xmin, ymax, xmax] with coordinates normalized to 0-1000.
-  This means coordinates represent positions on a 1000x1000 version of the image.
-- Return figures as:
-  "figures": [ {"box_2d": [ymin, xmin, ymax, xmax], "label": "description", "image_index": 0} ]
-- Box ONLY the figure artwork — exclude caption text, question text, and labels around the figure.
-  The box should be TIGHT around the illustration/photo/diagram itself.
-- Same order as __FIGURE_n__ placeholders in the LaTeX.
-- image_index is 0-based (which screenshot the figure is in). Single screenshot: use 0.
-- If NO figures exist in the image, return "figures": []
+FIGURE BOXES:
+- box_2d = [ymin, xmin, ymax, xmax] normalized 0-1000.
+- Detect diagrams/photos ONLY (not tables/text/equations).
+- Tight box around artwork only, exclude surrounding text.
+- image_index = 0-based (which screenshot). [] if no figures.
 """
 
 # ============================ /convert =====================================
@@ -318,9 +133,33 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
         raise HTTPException(502, f"Gemini call failed: {e}")
 
     text = re.sub(r"^```(json)?|```$", "", text.strip()).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
+    
+    # attempt to fix common JSON issues from the model
+    # fix unescaped newlines inside string values
+    def repair_json(s):
+        # try parsing as-is first
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            pass
+        # try fixing unescaped newlines in string values
+        try:
+            fixed = re.sub(r'(?<!\\)\n', r'\\n', s)
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+        # try extracting just the JSON object
+        match = re.search(r'\{.*\}', s, re.DOTALL)
+        if match:
+            try:
+                fixed = re.sub(r'(?<!\\)\n', r'\\n', match.group())
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+        return None
+    
+    data = repair_json(text)
+    if data is None:
         raise HTTPException(502, f"Model did not return valid JSON:\n{text[:400]}")
 
     latex = data.get("latex", "")
