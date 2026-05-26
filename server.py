@@ -418,9 +418,14 @@ class QIn(BaseModel):
     marks: Optional[int] = None
     figureCount: int = 0
 
+class FigIn(BaseModel):
+    name: str
+    dataUrl: str
+
 class PaperIn(BaseModel):
     title: str; author: str; cred: str; inst: str; contact: str; date: str
     questions: List[QIn]
+    figures: List[FigIn] = []
 
 @app.post("/export")
 def export(paper: PaperIn):
@@ -451,11 +456,22 @@ def export(paper: PaperIn):
 
     tex = _build_doc(paper, "\n\n".join(items))
 
+    # decode the user's cropped figures (base64 data URLs) and bundle them
+    import base64 as _b64
+    packaged = {}
+    for fig in paper.figures:
+        m = re.match(r'data:image/\w+;base64,(.*)$', fig.dataUrl, re.DOTALL)
+        if not m:
+            continue
+        try:
+            packaged[fig.name] = _b64.b64decode(m.group(1))
+        except Exception:
+            continue
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("paper.tex", tex)
-        # include any images the user uploaded into the store, named to match
-        for name, data in FIGURE_STORE.items():
+        for name, data in packaged.items():
             z.writestr(name, data)
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/zip",
