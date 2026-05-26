@@ -584,21 +584,58 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     content_parts.append("Extract the structure of this exam question. Return valid JSON only.")
 
     model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
+    # Build generation config. Gemini 2.5 Flash has "thinking" ON by default, and
+    # thinking tokens are billed against max_output_tokens — on a long multi-part
+    # question they can eat the budget and the JSON gets cut off mid-stream
+    # (the "did not return valid JSON" / truncated-text error). We don't need
+    # reasoning for structured extraction, so disable it to give 100% of the
+    # output budget to the JSON itself.
+    gen_config = {
+        "response_mime_type": "application/json",
+        "temperature": 0.1,
+        "max_output_tokens": 65000,
+        "thinking_config": {"thinking_budget": 0},
+    }
     try:
-        resp = model.generate_content(
-            content_parts,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.1,
-                "max_output_tokens": 16384,
-            },
-        )
-        text = resp.text.strip()
+        resp = model.generate_content(content_parts, generation_config=gen_config)
     except Exception as e:
-        raise HTTPException(502, f"Gemini call failed: {e}")
+        # Some SDK/model combos reject thinking_config; retry once without it so a
+        # version mismatch never hard-fails the whole request.
+        if "thinking" in str(e).lower():
+            gen_config.pop("thinking_config", None)
+            try:
+                resp = model.generate_content(content_parts, generation_config=gen_config)
+            except Exception as e2:
+                raise HTTPException(502, f"Gemini call failed: {e2}")
+        else:
+            raise HTTPException(502, f"Gemini call failed: {e}")
+
+    # Pull the text out robustly. resp.text can raise if the only candidate was
+    # blocked or finished without a normal text part, so dig into candidates.
+    text, finish = _extract_text(resp)
+    if not text:
+        reason = finish or "unknown"
+        raise HTTPException(502,
+            f"Gemini returned no usable text (finish reason: {reason}). "
+            f"If this says SAFETY or RECITATION, try re-cropping the screenshot; "
+            f"if MAX_TOKENS, the question may be too long for one request.")
 
     structured = _parse_json(text)
     if structured is None:
+        # A truncated finish almost always means the JSON was cut off mid-stream.
+        # finish_reason may be an enum ('FinishReason.MAX_TOKENS'), a bare string
+        # ('MAX_TOKENS'), or the integer 2 — match all of them.
+        fstr = str(finish).upper()
+        is_truncated = ("MAX_TOKENS" in fstr) or (fstr.strip() in ("2", "FINISHREASON.MAX_TOKENS"))
+        # also infer truncation structurally: valid JSON start but no clean close
+        looks_cut = text.lstrip().startswith("{") and not text.rstrip().endswith("}")
+        if is_truncated or looks_cut:
+            raise HTTPException(502,
+                "The model's response was cut off before the JSON finished "
+                "(output-token limit or a very long question). Thinking is now "
+                "disabled to free up the budget — re-try Convert. If it still cuts "
+                "off, split this question into smaller screenshots or convert one "
+                "sub-part at a time.")
         raise HTTPException(502, f"Model did not return valid JSON:\n{text[:500]}")
 
     try:
@@ -609,6 +646,101 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     total = structured.get("totalMarks")
     return {"latex": latex, "totalMarks": total, "marksFound": total is not None,
             "structured": structured, "figureCount": fig_count}
+
+
+def _extract_text(resp):
+    """Return (text, finish_reason). Robust to blocked/empty candidates so we
+    never raise just trying to read the response."""
+    finish = None
+    # try the simple accessor first
+    try:
+        t = (resp.text or "").strip()
+        if t:
+            try:
+                finish = resp.candidates[0].finish_reason
+            except Exception:
+                finish = None
+            return t, finish
+    except Exception:
+        pass
+    # fall back to walking candidates/parts manually
+    try:
+        cand = resp.candidates[0]
+        finish = getattr(cand, "finish_reason", None)
+        parts = getattr(getattr(cand, "content", None), "parts", []) or []
+        buf = []
+        for p in parts:
+            val = getattr(p, "text", None)
+            if val:
+                buf.append(val)
+        return ("".join(buf).strip(), finish)
+    except Exception:
+        return ("", finish)
+
+
+def _repair_truncated_json(text):
+    """Best-effort: salvage JSON that was cut off mid-stream by closing any
+    unterminated string and balancing open brackets/braces. Returns a parsed
+    object or None. Only used as a last resort."""
+    s = text.strip()
+    # drop a trailing partial token after the last comma so we don't keep half a key
+    # walk the string tracking structure, ignoring chars inside strings
+    in_str = False
+    esc = False
+    stack = []
+    last_safe = 0  # index just after the last fully-closed value/comma at depth>0
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+                last_safe = i + 1
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            last_safe = i + 1
+        elif ch in ",":
+            last_safe = i + 1
+        elif ch in "0123456789tfn] " or ch in ".eE+-":
+            # could be end of a literal; treat closing brackets above as the anchor
+            pass
+    # Truncate to the last structurally safe point, drop a dangling comma,
+    # then close any still-open string and brackets.
+    repaired = s
+    if in_str:
+        # we were cut off inside a string value: cut back to last safe point
+        repaired = s[:last_safe]
+    repaired = repaired.rstrip()
+    repaired = re.sub(r",\s*$", "", repaired)  # remove trailing comma
+    # rebuild the close stack by re-scanning the (now trimmed) text
+    in_str = False; esc = False; stack = []
+    for ch in repaired:
+        if in_str:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == '"': in_str = False
+            continue
+        if ch == '"': in_str = True
+        elif ch == "{": stack.append("}")
+        elif ch == "[": stack.append("]")
+        elif ch in "}]":
+            if stack: stack.pop()
+    if in_str:
+        repaired += '"'
+    while stack:
+        repaired += stack.pop()
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
 
 
 def _parse_json(text):
@@ -627,7 +759,8 @@ def _parse_json(text):
             return json.loads(re.sub(r'(?<!\\)\n', r'\\n', m.group()))
         except json.JSONDecodeError:
             pass
-    return None
+    # last resort: try to repair a response that was cut off mid-stream
+    return _repair_truncated_json(text)
 
 
 # ============================================================================
