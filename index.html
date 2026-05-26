@@ -253,21 +253,23 @@ function render(){
     if(q.status==='error'){ dyn.innerHTML=`<div class="errbox">⚠ ${q.error}</div>`; }
     if(q.status==='ready'){
       const marksWarn=q.marksFound===false?`<div class="warnbox">⚠ No total-mark line found in the image — enter it manually.</div>`:'';
-      let figSlots = '';
-      if(q.figureCount>0){
-        q.figureCrops = q.figureCrops || [];
-        let slots = '';
-        for(let i=1;i<=q.figureCount;i++){
-          const crop = q.figureCrops[i-1];
-          slots += `<div class="figslot">
-            <span class="figlbl">Figure ${i}</span>
-            ${crop?`<img class="figprev" src="${crop}">`:'<span class="figempty">not cropped</span>'}
-            <button class="btn-sm" data-crop="${i}">${crop?'Re-crop':'Crop'}</button>
-          </div>`;
-        }
-        figSlots = `<div class="warnbox">📎 ${q.figureCount} figure${q.figureCount!==1?'s':''} detected — crop each from your uploaded image(s).</div>
-          <div class="figslots">${slots}</div>`;
+      q.figureCrops = q.figureCrops || [];
+      // number of figure slots = max(AI-detected count, crops already made)
+      const slotCount = Math.max(q.figureCount||0, q.figureCrops.length);
+      let slots = '';
+      for(let i=1;i<=slotCount;i++){
+        const crop = q.figureCrops[i-1];
+        slots += `<div class="figslot">
+          <span class="figlbl">Figure ${i}</span>
+          ${crop?`<img class="figprev" src="${crop}">`:'<span class="figempty">not cropped</span>'}
+          <button class="btn-sm" data-crop="${i}">${crop?'Re-crop':'Crop'}</button>
+          ${crop?`<button class="btn-sm" data-delcrop="${i}">✕</button>`:''}
+        </div>`;
       }
+      const detected = (q.figureCount>0)?`<div class="warnbox">📎 ${q.figureCount} figure${q.figureCount!==1?'s':''} detected in the LaTeX — crop each from your uploaded image(s).</div>`:'';
+      const figSlots = `${detected}
+        <div class="figslots">${slots}</div>
+        <div class="btn-row" style="margin:6px 0"><button class="btn-sm" data-act="addfig">+ Add figure to crop</button></div>`;
       dyn.innerHTML=`
         ${figSlots}
         ${marksWarn}
@@ -285,6 +287,8 @@ function render(){
     const conv=card.querySelector('[data-act="convert"]'); if(conv) conv.onclick=()=>convertQuestion(q);
     const marks=card.querySelector('[data-act="marks"]'); if(marks) marks.onchange=e=>{q.totalMarks=e.target.value;render();};
     card.querySelectorAll('[data-crop]').forEach(b=>b.onclick=()=>openCropper(q, +b.dataset.crop));
+    card.querySelectorAll('[data-delcrop]').forEach(b=>b.onclick=()=>{ q.figureCrops[+b.dataset.delcrop-1]=null; render(); });
+    const addfig=card.querySelector('[data-act="addfig"]'); if(addfig) addfig.onclick=()=>{ q.figureCrops=q.figureCrops||[]; openCropper(q, q.figureCrops.length+1); };
     thumbs.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{q.images.splice(+b.dataset.rm,1);q.rawFiles.splice(+b.dataset.rm,1);if(!q.images.length)q.status='empty';render();});
     qContainer.appendChild(card);
   });
@@ -376,7 +380,7 @@ async function exportPaper(){
   const figures = [];
   let gidx = 0;
   for(const q of state.questions){
-    const n = q.figureCount||0;
+    const n = Math.max(q.figureCount||0, (q.figureCrops||[]).length);
     for(let i=0;i<n;i++){
       gidx++;
       const crop = (q.figureCrops||[])[i];
@@ -392,7 +396,7 @@ async function exportPaper(){
     inst:$('#p_inst').value, contact:$('#p_contact').value, date:$('#p_date').value,
     questions: state.questions.map(q=>({
       body: q.latex||'', marks: q.totalMarks!=null&&q.totalMarks!==''?parseInt(q.totalMarks):null,
-      figureCount: q.figureCount||0
+      figureCount: Math.max(q.figureCount||0, (q.figureCrops||[]).length)
     })),
     figures: figures.filter(f=>f.dataUrl)
   };
@@ -418,13 +422,15 @@ function fullLatexPreview(){
   return `\\documentclass[a4paper,12pt]{article}
 \\usepackage{amsmath}\\usepackage{amssymb}\\usepackage[utf8]{inputenc}
 \\usepackage{geometry}\\usepackage{array}\\usepackage{graphicx}\\usepackage{xcolor}
+\\usepackage{textcomp}\\usepackage{gensymb}\\usepackage{siunitx}
+\\DeclareUnicodeCharacter{00B5}{\\textmu}\\DeclareUnicodeCharacter{03BC}{\\textmu}\\DeclareUnicodeCharacter{03A9}{\\ensuremath{\\Omega}}\\DeclareUnicodeCharacter{2126}{\\ensuremath{\\Omega}}\\DeclareUnicodeCharacter{00B0}{\\textdegree}\\DeclareUnicodeCharacter{00B2}{\\textsuperscript{2}}\\DeclareUnicodeCharacter{00B3}{\\textsuperscript{3}}\\DeclareUnicodeCharacter{00B7}{\\textperiodcentered}\\DeclareUnicodeCharacter{2212}{\\ensuremath{-}}\\DeclareUnicodeCharacter{00D7}{\\ensuremath{\\times}}
 \\geometry{margin=1in}
 \\begin{document}
 \\title{\\LARGE \\textbf{${$('#p_title').value}}}
 \\author{\\large ${$('#p_author').value} \\\\ \\text{${$('#p_cred').value}} \\\\ ${$('#p_inst').value} \\\\ \\textbf{Contact: ${$('#p_contact').value}}}
 \\date{${$('#p_date').value}}
 \\maketitle
-\\hline
+\\hrule
 \\begin{enumerate}
 
 ${items}
