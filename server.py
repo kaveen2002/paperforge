@@ -89,13 +89,18 @@ MARKS:
 - marks = the integer in (N) for that part, or null if none shown.
 
 ANSWER TYPE (pick the ONE that matches how the answer is collected):
-- "none" = just working space, no answer blank (proofs, "show that", "describe").
-- "line" = a single answer blank line.
-- "line_unit" = answer blank followed by a unit (set answer_unit).
-- "equation" = answer of form "x = ___" (set answer_label to the variable).
-- "two_values" = two separate answer blanks (e.g. two unknowns).
-- "coordinates" = a coordinate answer like ( ___ , ___ ).
-- "answer_label" = a labelled "Answer: ___" blank.
+- DEFAULT is "none". Only choose another type if the screenshot ACTUALLY SHOWS an answer
+  blank, a printed answer line, an "Answer:" prompt, or a "x = ___" / "( __ , __ )" template.
+- If the question just needs working space (no printed answer line), use "none".
+- "none" = just working space, no answer blank (proofs, "show that", "describe", "explain",
+  and any question that does not show a printed answer line).
+- "line" = the screenshot shows a single printed answer blank line.
+- "line_unit" = the screenshot shows an answer blank followed by a unit (set answer_unit).
+- "equation" = the screenshot shows "x = ___" (set answer_label to the variable).
+- "two_values" = the screenshot shows two separate answer blanks.
+- "coordinates" = the screenshot shows a coordinate template like ( ___ , ___ ).
+- "answer_label" = the screenshot shows a labelled "Answer: ___" blank.
+- When in doubt, choose "none".
 
 ANSWER WIDTH (pick by how long the expected answer is):
 - "standard" = normal width (single values, expressions, units).
