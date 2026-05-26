@@ -1,8 +1,8 @@
 """
-PaperForge backend — Structured Extraction edition
-====================================================
-The model EXTRACTS structured data (no LaTeX). Deterministic code GENERATES LaTeX
-from fixed templates. This guarantees 100% consistent formatting.
+PaperForge backend — Rule-Based Formatter edition
+===================================================
+DESIGN: AI extracts structured data + picks from FIXED MENUS only.
+        Deterministic code owns 100% of LaTeX formatting.
 
 POST /convert  ->  image(s) + questionNumber  =>  { latex, totalMarks, structured, crops }
 POST /export   ->  full paper state            =>  zip of paper.tex + N.png figures
@@ -37,216 +37,309 @@ def home():
 FIGURE_STORE = {}
 
 # ============================================================================
-# EXTRACTION PROMPT — model returns STRUCTURED DATA only, never LaTeX formatting
+# EXTRACTION PROMPT — model extracts data + picks from FIXED MENUS only.
+# It NEVER writes layout commands (\item, \vspace, \hfill, \begin, etc).
 # ============================================================================
 SYSTEM_PROMPT = r"""
 You read a screenshot of ONE exam question and extract its STRUCTURE as JSON.
-You do NOT write LaTeX layout. You only identify the content and label its parts.
+You do NOT write any LaTeX layout. You only extract content and PICK from fixed menus.
 
 Return STRICT VALID JSON:
 {
-  "intro": "<any text/equations that appear BEFORE the first sub-part, or '' if none>",
+  "intro": "<text before the first sub-part, or '' >",
+  "intro_breaks": [],
   "parts": [
     {
-      "label": "a",                      // a, b, c... or "i","ii" for nested; "" if question has no parts
-      "level": 0,                        // 0 = top-level part (a,b,c), 1 = nested (i,ii)
-      "text": "<the full text of this part/question>",
+      "level": 0,
+      "text": "<full text of this part>",
+      "breaks": [{"after_sentence": <int index>, "type": "tight|para|double"}],
       "marks": <integer or null>,
-      "answer_type": "none|line|line_unit|equation_box|two_lines",
+      "answer_type": "none|line|line_unit|equation|two_values|coordinates|answer_label",
       "answer_label": "<e.g. 'wave speed' or 'x' or '' >",
       "answer_unit": "<e.g. 'm/s' or 'cm' or '' >",
-      "figure_here": <true if a figure appears within this part, else false>,
-      "is_table": <true if this part contains a data table>,
-      "table": {"headers": ["..."], "rows": [["..."],["..."]]},  // only if is_table
-      "is_mcq": <true if multiple choice>,
-      "mcq_options": ["option A text","option B text",...],       // only if is_mcq
-      "bullets": ["bullet 1","bullet 2"]                          // [] if none
+      "answer_width": "standard|narrow",
+      "figure_here": false,
+      "figure_position": "before|after",
+      "figure_size": "small|medium|large",
+      "is_table": false,
+      "table": {"has_header": true, "headers": ["..."], "rows": [["..."]]},
+      "is_mcq": false,
+      "mcq_options": ["..."],
+      "bullets": []
     }
   ],
   "figures": [{"box_2d":[ymin,xmin,ymax,xmax],"image_index":0}],
   "totalMarks": <integer or null>
 }
 
-EXTRACTION RULES:
-- Copy ALL text EXACTLY as shown. Preserve wording, numbers, punctuation, symbols.
-- For maths in text, write it in LaTeX inline form using \( \) — e.g. \( x^2 + 3x \), \( 105^\circ \), \( \dfrac{a}{b} \).
-- For a question with NO sub-parts: use ONE part with label "" and level 0.
-- For sub-parts (a),(b),(c): each is a part with its label and level 0.
-- For nested (i),(ii) under a part: separate parts with level 1, labels "i","ii".
-- marks: the number in (N) for that part, or null if none shown.
-- answer_type:
-    "none" = no answer blank needed (just working space)
-    "line" = a single answer blank line
-    "line_unit" = answer blank with a unit (set answer_unit)
-    "equation_box" = answer of form "x = ___" (set answer_label)
-    "two_lines" = two answer blanks (e.g. two values)
-- figure_here: true if a diagram/photo belongs in this part's flow.
-- bullets: if the part lists items as bullets, put them here (text only, no markers).
-- is_table/table: extract data tables with headers and rows.
-- is_mcq/mcq_options: extract A/B/C/D choices as a list.
+=== EXTRACTION RULES ===
+
+CONTENT:
+- Copy ALL text EXACTLY. Preserve wording, numbers, punctuation, symbols.
+- Do NOT include the question's own number (like "2").
+- Write maths inline using \( \): e.g. \( x^2+3x \), \( 105^\circ \), \( \dfrac{a}{b} \).
+- Keep units as written ("220 m", "0.70 s") — the system handles spacing.
+
+HIERARCHY (level):
+- level 0 = a top-level part (becomes (a),(b),(c)).
+- level 1 = a nested part (becomes (i),(ii),(iii)).
+- A question with NO sub-parts = ONE part with level 0.
+
+MARKS:
+- marks = the integer in (N) for that part, or null if none shown.
+
+ANSWER TYPE (pick the ONE that matches how the answer is collected):
+- "none" = just working space, no answer blank (proofs, "show that", "describe").
+- "line" = a single answer blank line.
+- "line_unit" = answer blank followed by a unit (set answer_unit).
+- "equation" = answer of form "x = ___" (set answer_label to the variable).
+- "two_values" = two separate answer blanks (e.g. two unknowns).
+- "coordinates" = a coordinate answer like ( ___ , ___ ).
+- "answer_label" = a labelled "Answer: ___" blank.
+
+ANSWER WIDTH (pick by how long the expected answer is):
+- "standard" = normal width (single values, expressions, units).
+- "narrow" = short (each coordinate/value in two_values or coordinates).
+
+FIGURE:
+- figure_here: true if a diagram/photo belongs in this part.
+- figure_position: "before" (figure before the question instruction, usual) or "after".
+- figure_size: "small" (simple shape), "medium" (standard diagram), "large" (graph/grid/wide).
+
+TABLE:
+- is_table + table if a data table is present.
+- has_header: true if the first row is column headers; false for label-style tables.
+- Keep inline maths in cells (e.g. "\( 0 < m \le 100 \)"). Empty cells = "".
+
+MCQ: is_mcq + mcq_options as a list of the option texts (A,B,C,D order).
+
+BULLETS: if the part lists bulleted items, put their texts in bullets [].
+
+LINE BREAKS (breaks array):
+- Mark where the ORIGINAL visibly starts a new line within this part's text.
+- For each break: "after_sentence" = the 0-based index of the sentence it follows,
+  "type" = "tight" (lines directly stacked, e.g. listed conditions),
+           "para" (normal paragraph gap between statements),
+           "double" (a larger visual gap in the original).
+- If unsure, omit breaks (the system uses paragraph spacing by default).
 
 FIGURE BOXES:
 - box_2d: [ymin, xmin, ymax, xmax] normalized 0-1000, TIGHT around artwork only.
-- Detect diagrams/photos ONLY (not tables, not text, not equations).
-- image_index: 0-based which screenshot. Empty [] if no figures.
+- Detect diagrams/photos ONLY (not tables/text/equations).
+- image_index: 0-based. Empty [] if none.
 
-Do NOT output any LaTeX layout commands (no \item, \vspace, \hfill, \begin, etc).
-Only the content text (with inline maths) and the structural labels above.
+Output ONLY the JSON. No LaTeX layout commands anywhere.
 """
 
 # ============================================================================
-# DETERMINISTIC LATEX GENERATOR — fixed templates, 100% consistent
+# RULE-BASED FORMATTER — owns 100% of LaTeX. Fixed rules, no decisions.
 # ============================================================================
 
-# fixed spacing by mark count — SAME every time
-SPACE_BY_MARKS = {0: "2cm", 1: "2cm", 2: "3cm", 3: "4cm", 4: "5cm", 5: "6cm", 6: "7cm"}
-def _space_for(marks):
+# --- spacing: code-derived from marks (FIXED) ---
+def space_for_marks(marks):
     if marks is None:
         return "2cm"
-    return SPACE_BY_MARKS.get(marks, "8cm" if marks > 6 else "2cm")
+    table = {1: "2cm", 2: "3cm", 3: "4cm", 4: "5cm", 5: "6cm"}
+    if marks <= 0:
+        return "2cm"
+    return table.get(marks, "7cm")  # 6+ -> 7cm
 
-def _answer_block(part):
-    """Generate a consistent answer blank based on answer_type."""
+# --- figure size menu (FIXED) ---
+FIG_WIDTH = {"small": "0.45", "medium": "0.6", "large": "0.8"}
+def fig_width(size):
+    return FIG_WIDTH.get(size, "0.6")
+
+# --- answer width menu (FIXED) ---
+def ans_width(width):
+    return "2cm" if width == "narrow" else "5cm"
+
+# --- answer block layouts (FIXED, one per type) ---
+def answer_block(part):
     at = part.get("answer_type", "none")
-    label = part.get("answer_label", "") or ""
-    unit = part.get("answer_unit", "") or ""
+    label = (part.get("answer_label") or "").strip()
+    unit = (part.get("answer_unit") or "").strip()
+    w = ans_width(part.get("answer_width", "standard"))
     if at == "line":
-        return "\n\\hfill \\underline{\\hspace{5cm}}\n\\vspace{0.5cm}"
+        return f"\n\\hfill \\underline{{\\hspace{{{w}}}}}\n\\vspace{{0.5cm}}"
     if at == "line_unit":
         lab = f"{label} = " if label else ""
-        return f"\n\\hfill {lab}\\underline{{\\hspace{{5cm}}}} {unit}\n\\vspace{{0.5cm}}"
-    if at == "equation_box":
+        return f"\n\\hfill {lab}\\underline{{\\hspace{{{w}}}}} {unit}\n\\vspace{{0.5cm}}"
+    if at == "equation":
         lab = label if label else "x"
         return f"\n\\[ {lab} = \\dotfill \\]\n\\vspace{{0.3cm}}"
-    if at == "two_lines":
-        return ("\n\\hfill \\underline{\\hspace{4cm}}\n\\vspace{0.3cm}"
-                "\n\\hfill \\underline{\\hspace{4cm}}\n\\vspace{0.5cm}")
-    return ""
+    if at == "two_values":
+        nw = "2cm"
+        return (f"\n\\hfill \\underline{{\\hspace{{{nw}}}}}\n\\vspace{{0.3cm}}"
+                f"\n\\hfill \\underline{{\\hspace{{{nw}}}}}\n\\vspace{{0.5cm}}")
+    if at == "coordinates":
+        return ("\n\\hfill \\( ( \\underline{\\hspace{2cm}} , \\underline{\\hspace{2cm}} ) \\)"
+                "\n\\vspace{0.5cm}")
+    if at == "answer_label":
+        return f"\n\\hfill \\textbf{{Answer:}} \\underline{{\\hspace{{{w}}}}}\n\\vspace{{0.5cm}}"
+    return ""  # none
 
-def _render_table(tbl):
+# --- line break application (FIXED) ---
+def apply_breaks(text, breaks):
+    """Insert \\ / paragraph / double-gap at marked sentence boundaries."""
+    if not breaks:
+        return text
+    # split text into sentences on '. ' boundaries (keep the period)
+    sentences = re.split(r'(?<=\.)\s+', text.strip())
+    out = []
+    bmap = {b["after_sentence"]: b["type"] for b in breaks if "after_sentence" in b}
+    for idx, sent in enumerate(sentences):
+        out.append(sent)
+        if idx in bmap:
+            t = bmap[idx]
+            if t == "tight":
+                out.append("\\\\\n")
+            elif t == "double":
+                out.append("\n\n\\vspace{0.3cm}\n")
+            else:  # para
+                out.append("\n\n")
+        else:
+            out.append(" ")
+    return "".join(out).strip()
+
+# --- text cleanup (FIXED) ---
+def clean_text(text):
+    if not text:
+        return ""
+    s = text.strip()
+    if re.fullmatch(r'\d+\s*[.)]?', s):
+        return ""
+    s = re.sub(r'^\s*\d+\s*[.)]?\s+', '', s)
+    s = re.sub(r'(?<=\d)\s+(m/s|km/h|cm|mm|km|kg|Hz|m|s|g|N|J|W|V|A)\b',
+               lambda m: '\\,' + m.group(1), s)
+    return s
+
+# --- table render (FIXED) ---
+def render_table(tbl):
     headers = tbl.get("headers", [])
     rows = tbl.get("rows", [])
+    has_header = tbl.get("has_header", True)
     ncol = max(len(headers), max((len(r) for r in rows), default=0)) or 2
     spec = "|" + "c|" * ncol
     out = ["\\begin{center}", f"\\begin{{tabular}}{{{spec}}}", "\\hline"]
-    if headers:
+    if headers and has_header:
         out.append(" & ".join(f"\\textbf{{{h}}}" for h in headers) + " \\\\ \\hline")
+    elif headers and not has_header:
+        out.append(" & ".join(str(h) for h in headers) + " \\\\ \\hline")
     for r in rows:
         cells = list(r) + [""] * (ncol - len(r))
         out.append(" & ".join(str(c) for c in cells) + " \\\\ \\hline")
     out += ["\\end{tabular}", "\\end{center}"]
     return "\n".join(out)
 
-def _render_mcq(options):
+def render_mcq(options):
     out = ["\\begin{center}", "\\begin{tabular}{|c|l|}", "\\hline"]
     letters = ["A", "B", "C", "D", "E", "F"]
-    for i, opt in enumerate(options):
+    for i, opt in enumerate(options[:6]):
         out.append(f"{letters[i]} & {opt} \\\\ \\hline")
     out += ["\\end{tabular}", "\\end{center}"]
     return "\n".join(out)
 
-def _render_bullets(bullets):
+def render_bullets(bullets):
     out = ["\\begin{itemize}"]
     for b in bullets:
         out.append(f"    \\item {b}")
     out.append("\\end{itemize}")
     return "\n".join(out)
 
-def _figure_placeholder(n):
+def figure_placeholder(n, size):
     return ("\\begin{center}\n"
-            f"\\includegraphics[width=0.6\\textwidth]{{__FIGURE_{n}__}}\n"
+            f"\\includegraphics[width={fig_width(size)}\\textwidth]{{__FIGURE_{n}__}}\n"
             "\\end{center}")
 
-def _render_part(part, fig_counter):
-    """Render one part into LaTeX. Returns (latex, new_fig_counter)."""
+def render_part(part, fig_counter):
     lines = []
-    text = part.get("text", "").strip()
+    text = clean_text(part.get("text", ""))
+    text = apply_breaks(text, part.get("breaks", []))
+    fig_pos = part.get("figure_position", "before")
+    fig_size = part.get("figure_size", "medium")
 
-    # figure (if it belongs in this part)
+    fig_num = None
     if part.get("figure_here"):
         fig_counter[0] += 1
-        # figure goes before the question text typically
-    # table
+        fig_num = fig_counter[0]
+
+    # table (with lead-in text)
     if part.get("is_table") and part.get("table"):
         if text:
-            lines.append(text)
-        lines.append(_render_table(part["table"]))
-        text = ""  # consumed
-    # text
+            lines.append(text); text = ""
+        lines.append(render_table(part["table"]))
+
+    # figure before text
+    if fig_num is not None and fig_pos == "before":
+        lines.append(figure_placeholder(fig_num, fig_size))
+
     if text:
         lines.append(text)
-    # bullets
+
     if part.get("bullets"):
-        lines.append(_render_bullets(part["bullets"]))
-    # figure placeholder
-    if part.get("figure_here"):
-        lines.append(_figure_placeholder(fig_counter[0]))
-    # mcq
+        lines.append(render_bullets(part["bullets"]))
+
+    if fig_num is not None and fig_pos == "after":
+        lines.append(figure_placeholder(fig_num, fig_size))
+
     if part.get("is_mcq") and part.get("mcq_options"):
-        lines.append(_render_mcq(part["mcq_options"]))
+        lines.append(render_mcq(part["mcq_options"]))
 
     body = "\n".join(lines)
 
-    # marks
     marks = part.get("marks")
     if marks is not None:
         body += f" \\hfill ({marks})"
-
-    # working space
-    body += f"\n\\vspace{{{_space_for(marks)}}}"
-
-    # answer block
-    body += _answer_block(part)
-
+    body += f"\n\\vspace{{{space_for_marks(marks)}}}"
+    body += answer_block(part)
     return body, fig_counter
 
+def item_fmt(body, indent="  "):
+    if body.lstrip().startswith("\\begin"):
+        return f"{indent}\\item\n{body}"
+    return f"{indent}\\item {body}"
+
 def generate_latex(structured):
-    """Deterministically build the question body LaTeX from structured data."""
     fig_counter = [0]
     blocks = []
 
-    intro = (structured.get("intro") or "").strip()
+    intro = clean_text(structured.get("intro") or "")
+    intro = apply_breaks(intro, structured.get("intro_breaks", []))
     if intro:
         blocks.append(intro)
 
     parts = structured.get("parts", [])
-    # detect if there are real sub-parts (more than one, or labeled)
-    has_subparts = len(parts) > 1 or (len(parts) == 1 and parts[0].get("label"))
+    has_subparts = len(parts) > 1 or (len(parts) == 1 and parts[0].get("level", 0) != 0)
+    # also treat single level-0 with no siblings as a plain question
+    real_multi = len(parts) > 1
 
-    if not has_subparts and len(parts) == 1:
-        # single question, no enumerate
-        body, fig_counter = _render_part(parts[0], fig_counter)
+    if not real_multi and len(parts) == 1 and parts[0].get("level", 0) == 0:
+        body, fig_counter = render_part(parts[0], fig_counter)
         blocks.append(body)
-    else:
-        # group by nesting: build enumerate with possible nested enumerate
+    elif parts:
         out = ["\\begin{enumerate}"]
         i = 0
         while i < len(parts):
             p = parts[i]
             if p.get("level", 0) == 0:
-                body, fig_counter = _render_part(p, fig_counter)
-                # check for nested level-1 parts following
+                body, fig_counter = render_part(p, fig_counter)
                 nested = []
                 j = i + 1
                 while j < len(parts) and parts[j].get("level", 0) == 1:
-                    nested.append(parts[j])
-                    j += 1
+                    nested.append(parts[j]); j += 1
                 if nested:
-                    out.append(f"  \\item {body}")
+                    out.append(item_fmt(body))
                     out.append("  \\begin{enumerate}")
                     for np in nested:
-                        nbody, fig_counter = _render_part(np, fig_counter)
-                        out.append(f"    \\item {nbody}")
+                        nbody, fig_counter = render_part(np, fig_counter)
+                        out.append(item_fmt(nbody, indent="    "))
                     out.append("  \\end{enumerate}")
                     i = j
                 else:
-                    out.append(f"  \\item {body}")
-                    i += 1
+                    out.append(item_fmt(body)); i += 1
             else:
-                # stray nested part without parent — treat as item
-                body, fig_counter = _render_part(p, fig_counter)
-                out.append(f"  \\item {body}")
-                i += 1
+                body, fig_counter = render_part(p, fig_counter)
+                out.append(item_fmt(body)); i += 1
         out.append("\\end{enumerate}")
         blocks.append("\n".join(out))
 
@@ -278,7 +371,7 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
         content_parts.append({"mime_type": mime, "data": raw})
         if len(raw_list) > 1:
             content_parts.append(f"(Screenshot {i} of {len(raw_list)} for the same question.)")
-    content_parts.append(f"Extract the structure of this exam question. Return valid JSON only.")
+    content_parts.append("Extract the structure of this exam question. Return valid JSON only.")
 
     model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
     try:
@@ -294,7 +387,6 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     if structured is None:
         raise HTTPException(502, f"Model did not return valid JSON:\n{text[:500]}")
 
-    # GENERATE LATEX DETERMINISTICALLY from the structured data
     try:
         latex = generate_latex(structured)
     except Exception as e:
@@ -303,7 +395,6 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     total = structured.get("totalMarks")
     figures = structured.get("figures", []) or []
 
-    # crop figures
     crops = []
     for i, fig in enumerate(figures, start=1):
         img_idx = min(fig.get("image_index", 0), len(img_list) - 1)
@@ -319,7 +410,7 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
             crop = src_img.crop(rect)
             if crop.width < 10 or crop.height < 10:
                 continue
-            png_buf = io.BytesIO(); crop.save(png_buf, format="PNG"); png = png_buf.getvalue()
+            buf = io.BytesIO(); crop.save(buf, format="PNG"); png = buf.getvalue()
         except Exception:
             continue
         tmp_name = f"q{questionNumber}_fig{i}.png"
@@ -342,10 +433,10 @@ def _parse_json(text):
         return json.loads(re.sub(r'(?<!\\)\n', r'\\n', text))
     except json.JSONDecodeError:
         pass
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if m:
         try:
-            return json.loads(re.sub(r'(?<!\\)\n', r'\\n', match.group()))
+            return json.loads(re.sub(r'(?<!\\)\n', r'\\n', m.group()))
         except json.JSONDecodeError:
             pass
     return None
