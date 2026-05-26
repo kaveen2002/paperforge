@@ -22,21 +22,20 @@ from pydantic import BaseModel
 from PIL import Image
 
 # Gemini 2.5 Flash has "thinking" ON by default; thinking tokens are billed against
-# max_output_tokens and can truncate the JSON mid-stream. The ONLY reliable way to
-# turn thinking off is the NEW google-genai SDK (thinking_budget=0). The legacy
-# google.generativeai SDK CANNOT disable it. So we prefer the new SDK if installed
-# and fall back to the legacy one otherwise.
-import google.generativeai as genai            # legacy (fallback)
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
+# max_output_tokens and can truncate the JSON mid-stream. We use the new google-genai
+# SDK ONLY, because it's the one that can actually disable thinking (thinking_budget=0).
+# NOTE: do NOT also install the legacy "google-generativeai" — the two share underlying
+# Google libs (proto-plus/protobuf) and conflict, which silently breaks imports.
+from google import genai as genai_new
+from google.genai import types as genai_types
 
+_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 try:
-    from google import genai as genai_new       # new unified SDK
-    from google.genai import types as genai_types
-    _NEW_SDK = True
-    _new_client = genai_new.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+    _new_client = genai_new.Client(api_key=_API_KEY) if _API_KEY else None
+    _NEW_SDK = _new_client is not None
 except Exception:
-    _NEW_SDK = False
     _new_client = None
+    _NEW_SDK = False
 
 MODEL = "gemini-2.5-flash"
 
@@ -638,66 +637,48 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
 
 
 def _call_gemini(raw_list):
-    """Run extraction. Returns (text, finish_reason). Uses the new google-genai SDK
-    with thinking DISABLED when available (prevents thinking tokens from truncating
-    the JSON); otherwise falls back to the legacy SDK."""
+    """Run extraction with the new google-genai SDK, thinking DISABLED
+    (thinking_budget=0) so thinking tokens can't truncate the JSON.
+    Returns (text, finish_reason)."""
+    if _new_client is None:
+        raise HTTPException(500, "Gemini client not initialised (GEMINI_API_KEY missing).")
     user_note = "Extract the structure of this exam question. Return valid JSON only."
 
-    if _NEW_SDK and _new_client is not None:
-        # ---- NEW SDK path: thinking_budget=0 actually turns thinking OFF ----
-        parts = []
-        for i, (raw, mime) in enumerate(raw_list, start=1):
-            parts.append(genai_types.Part.from_bytes(data=raw, mime_type=mime))
-            if len(raw_list) > 1:
-                parts.append(genai_types.Part.from_text(
-                    text=f"(Screenshot {i} of {len(raw_list)} for the same question.)"))
-        parts.append(genai_types.Part.from_text(text=user_note))
-        cfg = genai_types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            temperature=0.1,
-            max_output_tokens=65000,
-            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
-        )
-        resp = _new_client.models.generate_content(model=MODEL, contents=parts, config=cfg)
-        # normalise text + finish reason out of the new-SDK response
-        text = ""
-        try:
-            text = (resp.text or "").strip()
-        except Exception:
-            text = ""
-        finish = None
-        try:
-            cand = resp.candidates[0]
-            finish = getattr(cand, "finish_reason", None)
-            if not text:
-                buf = []
-                for p in (getattr(getattr(cand, "content", None), "parts", []) or []):
-                    val = getattr(p, "text", None)
-                    if val and not getattr(p, "thought", False):
-                        buf.append(val)
-                text = "".join(buf).strip()
-        except Exception:
-            pass
-        return text, finish
-
-    # ---- LEGACY SDK path: cannot disable thinking; rely on big budget + repair ----
-    content_parts = []
+    parts = []
     for i, (raw, mime) in enumerate(raw_list, start=1):
-        content_parts.append({"mime_type": mime, "data": raw})
+        parts.append(genai_types.Part.from_bytes(data=raw, mime_type=mime))
         if len(raw_list) > 1:
-            content_parts.append(f"(Screenshot {i} of {len(raw_list)} for the same question.)")
-    content_parts.append(user_note)
-    model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
-    resp = model.generate_content(
-        content_parts,
-        generation_config={
-            "response_mime_type": "application/json",
-            "temperature": 0.1,
-            "max_output_tokens": 65000,
-        },
+            parts.append(genai_types.Part.from_text(
+                text=f"(Screenshot {i} of {len(raw_list)} for the same question.)"))
+    parts.append(genai_types.Part.from_text(text=user_note))
+    cfg = genai_types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        temperature=0.1,
+        max_output_tokens=65000,
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
-    return _extract_text(resp)
+    resp = _new_client.models.generate_content(model=MODEL, contents=parts, config=cfg)
+    # normalise text + finish reason out of the response
+    text = ""
+    try:
+        text = (resp.text or "").strip()
+    except Exception:
+        text = ""
+    finish = None
+    try:
+        cand = resp.candidates[0]
+        finish = getattr(cand, "finish_reason", None)
+        if not text:
+            buf = []
+            for p in (getattr(getattr(cand, "content", None), "parts", []) or []):
+                val = getattr(p, "text", None)
+                if val and not getattr(p, "thought", False):
+                    buf.append(val)
+            text = "".join(buf).strip()
+    except Exception:
+        pass
+    return text, finish
 
 
 def _extract_text(resp):
@@ -928,7 +909,7 @@ def _build_doc(p, items):
     )
 
 
-BUILD_VERSION = "2026-05-26-newsdk-thinking-off-1"
+BUILD_VERSION = "2026-05-26-newsdk-only-2"
 
 @app.get("/health")
 def health():
@@ -937,7 +918,8 @@ def health():
         "version": BUILD_VERSION,
         "model": MODEL,
         "key_set": bool(os.environ.get("GEMINI_API_KEY")),
-        "new_sdk": _NEW_SDK,                     # True => thinking can be disabled
-        "thinking_disabled": _NEW_SDK,           # True only when the new SDK is active
-        "gemini_path": "google-genai (thinking off)" if _NEW_SDK else "legacy google.generativeai",
+        "new_sdk": _NEW_SDK,                     # must be True for thinking to be off
+        "thinking_disabled": _NEW_SDK,
+        "gemini_path": "google-genai (thinking off)" if _NEW_SDK
+                       else "ERROR: client failed to init (check key / build log)",
     }
