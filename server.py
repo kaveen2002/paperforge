@@ -160,22 +160,22 @@ def answer_block(part):
     unit = (part.get("answer_unit") or "").strip()
     w = ans_width(part.get("answer_width", "standard"))
     if at == "line":
-        return f"\n\\hfill \\underline{{\\hspace{{{w}}}}}\n\\vspace{{0.5cm}}"
+        return f"\n\n\\noindent \\underline{{\\hspace{{{w}}}}}\n\n\\vspace{{0.5cm}}"
     if at == "line_unit":
         lab = f"{label} = " if label else ""
-        return f"\n\\hfill {lab}\\underline{{\\hspace{{{w}}}}} {unit}\n\\vspace{{0.5cm}}"
+        return f"\n\n\\noindent {lab}\\underline{{\\hspace{{{w}}}}} {unit}\n\n\\vspace{{0.5cm}}"
     if at == "equation":
         lab = label if label else "x"
-        return f"\n\\[ {lab} = \\dotfill \\]\n\\vspace{{0.3cm}}"
+        return f"\n\n\\[ {lab} = \\dotfill \\]\n\n\\vspace{{0.3cm}}"
     if at == "two_values":
         nw = "2cm"
-        return (f"\n\\hfill \\underline{{\\hspace{{{nw}}}}}\n\\vspace{{0.3cm}}"
-                f"\n\\hfill \\underline{{\\hspace{{{nw}}}}}\n\\vspace{{0.5cm}}")
+        return (f"\n\n\\noindent \\underline{{\\hspace{{{nw}}}}}\n\n\\vspace{{0.3cm}}"
+                f"\n\n\\noindent \\underline{{\\hspace{{{nw}}}}}\n\n\\vspace{{0.5cm}}")
     if at == "coordinates":
-        return ("\n\\hfill \\( ( \\underline{\\hspace{2cm}} , \\underline{\\hspace{2cm}} ) \\)"
-                "\n\\vspace{0.5cm}")
+        return ("\n\n\\noindent \\( ( \\underline{\\hspace{2cm}} , \\underline{\\hspace{2cm}} ) \\)"
+                "\n\n\\vspace{0.5cm}")
     if at == "answer_label":
-        return f"\n\\hfill \\textbf{{Answer:}} \\underline{{\\hspace{{{w}}}}}\n\\vspace{{0.5cm}}"
+        return f"\n\n\\noindent \\textbf{{Answer:}} \\underline{{\\hspace{{{w}}}}}\n\n\\vspace{{0.5cm}}"
     return ""  # none
 
 # --- line break application (FIXED) ---
@@ -288,9 +288,10 @@ def render_part(part, fig_counter):
     body = "\n".join(lines)
 
     marks = part.get("marks")
+    # ORDER: question text -> (blank) marks -> (blank) working space -> (blank) answer
     if marks is not None:
-        body += f" \\hfill ({marks})"
-    body += f"\n\\vspace{{{space_for_marks(marks)}}}"
+        body += f"\n\n\\hfill ({marks})"
+    body += f"\n\n\\vspace{{{space_for_marks(marks)}}}"
     body += answer_block(part)
     return body, fig_counter
 
@@ -482,7 +483,7 @@ def export(paper: PaperIn):
         total = ""
         if q.marks is not None:
             total = f"\n\n\\hfill \\textbf{{(Total for Question {qi} is {q.marks} marks)}}"
-        items.append(f"\\item\n{body}{total}\n\\hline")
+        items.append(f"\\item\n{body}{total}\n\\hrule")
 
     tex = _build_doc(paper, "\n\n".join(items))
     refs = re.findall(r"\\includegraphics\[[^\]]*\]\{([^}]+)\}", tex)
@@ -508,7 +509,7 @@ def _build_doc(p, items):
         "\\geometry{margin=1in}\n\n\\begin{document}\n"
         f"\\title{{\\LARGE \\textbf{{{p.title}}}}}\n"
         f"\\author{{\\large {p.author} \\\\ \\text{{{p.cred}}} \\\\ {p.inst} \\\\ \\textbf{{Contact: {p.contact}}}}}\n"
-        f"\\date{{{p.date}}}\n\\maketitle\n\\hline\n\\begin{{enumerate}}\n\n"
+        f"\\date{{{p.date}}}\n\\maketitle\n\\hrule\n\\begin{{enumerate}}\n\n"
         f"{items}\n\n\\end{{enumerate}}\n\n\\end{{document}}\n"
     )
 
