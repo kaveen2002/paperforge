@@ -786,18 +786,24 @@ def export(paper: PaperIn):
     items = []
     for qi, q in enumerate(paper.questions, start=1):
         body = (q.body or "").strip()
-        # renumber this question's local figure placeholders (1.png,2.png within the body)
-        # to global numbers across the whole paper.
-        # The body uses {k.png} per-question; remap to running globals.
-        n_here = int(q.figureCount or 0)
-        if n_here > 0:
-            # replace from highest to lowest to avoid collisions
+        # Renumber figure placeholders to be globally unique across the whole paper.
+        # ROBUST approach: scan the body for the placeholders that ACTUALLY exist
+        # (\includegraphics{...{N.png}}) in order of appearance, rather than trusting
+        # a separate figureCount that can drift after re-converts/edits. Each distinct
+        # local placeholder maps to the next running global number. This guarantees
+        # Q1 -> 1,2  Q2 -> 3  etc., with no collisions even if counts are wrong.
+        local_names = []
+        for m in re.finditer(r"\{(\d+)\.png\}", body):
+            if m.group(1) not in local_names:
+                local_names.append(m.group(1))
+        if local_names:
             mapping = {}
-            for local_k in range(1, n_here + 1):
+            for ln in local_names:
                 global_idx += 1
-                mapping[local_k] = global_idx
-            for local_k in sorted(mapping.keys(), reverse=True):
-                body = body.replace(f"{{{local_k}.png}}", f"{{__G{mapping[local_k]}__}}")
+                mapping[ln] = global_idx
+            # two-pass via sentinels so e.g. 1->3 and 2->1 can't collide
+            for ln, g in mapping.items():
+                body = body.replace(f"{{{ln}.png}}", f"{{__G{g}__}}")
             body = re.sub(r"__G(\d+)__", r"\1.png", body)
         total = ""
         if q.marks is not None:
