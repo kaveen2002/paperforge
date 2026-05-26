@@ -55,6 +55,7 @@ Return STRICT VALID JSON:
       "breaks": [{"after_sentence": <int index>, "type": "tight|para|double"}],
       "marks": <integer or null>,
       "answer_type": "none|line|line_unit|equation|two_values|coordinates|answer_label",
+      "lines_visible": false,
       "answer_label": "<e.g. 'wave speed' or 'x' or '' >",
       "answer_unit": "<e.g. 'm/s' or 'cm' or '' >",
       "answer_width": "standard|narrow",
@@ -89,18 +90,20 @@ MARKS:
 - marks = the integer in (N) for that part, or null if none shown.
 
 ANSWER TYPE (pick the ONE that matches how the answer is collected):
-- DEFAULT is "none". Only choose another type if the screenshot ACTUALLY SHOWS an answer
-  blank, a printed answer line, an "Answer:" prompt, or a "x = ___" / "( __ , __ )" template.
-- If the question just needs working space (no printed answer line), use "none".
-- "none" = just working space, no answer blank (proofs, "show that", "describe", "explain",
-  and any question that does not show a printed answer line).
-- "line" = the screenshot shows a single printed answer blank line.
-- "line_unit" = the screenshot shows an answer blank followed by a unit (set answer_unit).
-- "equation" = the screenshot shows "x = ___" (set answer_label to the variable).
-- "two_values" = the screenshot shows two separate answer blanks.
-- "coordinates" = the screenshot shows a coordinate template like ( ___ , ___ ).
-- "answer_label" = the screenshot shows a labelled "Answer: ___" blank.
-- When in doubt, choose "none".
+- CRITICAL: Only use a type OTHER than "none" if the screenshot LITERALLY SHOWS printed
+  answer lines, dotted lines, an "Answer:" prompt, or a printed template like "x = ____".
+  You must also set "lines_visible": true when you do. If you are not certain that printed
+  answer lines/blanks are visible in the image, use "none" and "lines_visible": false.
+- The MAJORITY of questions are "none" — they just have empty working space, NOT printed lines.
+- "none" = working space only, NO printed answer line. (proofs, "show that", "describe",
+  "explain", "calculate", "work out" — unless a printed blank is clearly visible).
+- "line" = the image shows a single printed answer line.
+- "line_unit" = the image shows an answer line followed by a unit.
+- "equation" = the image shows a printed "x = ____".
+- "two_values" = the image shows two printed answer lines.
+- "coordinates" = the image shows a printed ( ____ , ____ ) template.
+- "answer_label" = the image shows a printed "Answer: ____".
+- When in any doubt: "none" with "lines_visible": false.
 
 ANSWER WIDTH (pick by how long the expected answer is):
 - "standard" = normal width (single values, expressions, units).
@@ -161,6 +164,9 @@ def ans_width(width):
 # --- answer block layouts (FIXED, one per type) ---
 def answer_block(part):
     at = part.get("answer_type", "none")
+    # GUARD: only emit an answer line if the model confirmed printed lines are visible.
+    if not part.get("lines_visible", False):
+        at = "none"
     label = (part.get("answer_label") or "").strip()
     unit = (part.get("answer_unit") or "").strip()
     w = ans_width(part.get("answer_width", "standard"))
@@ -301,8 +307,10 @@ def render_part(part, fig_counter):
     return body, fig_counter
 
 def item_fmt(body, indent="  "):
+    # if the part begins with a block element (figure/table), use \item \hfill
+    # so the item label line is pushed and the figure sits cleanly below
     if body.lstrip().startswith("\\begin"):
-        return f"{indent}\\item\n{body}"
+        return f"{indent}\\item \\hfill\n{body}"
     return f"{indent}\\item {body}"
 
 def generate_latex(structured):
@@ -546,7 +554,11 @@ def export(paper: PaperIn):
         total = ""
         if q.marks is not None:
             total = f"\n\n\\hfill \\textbf{{(Total for Question {qi} is {q.marks} marks)}}"
-        items.append(f"\\item\n{body}{total}\n\\hrule")
+        # if the question body begins with a block (figure/table), use \item \hfill
+        if body.lstrip().startswith("\\begin"):
+            items.append(f"\\item \\hfill\n{body}{total}\n\\hrule")
+        else:
+            items.append(f"\\item\n{body}{total}\n\\hrule")
 
     tex = _build_doc(paper, "\n\n".join(items))
     refs = re.findall(r"\\includegraphics\[[^\]]*\]\{([^}]+)\}", tex)
