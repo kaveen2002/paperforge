@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from PIL import Image
 import google.generativeai as genai
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-2.5-flash-lite"
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
 app = FastAPI(title="PaperForge")
