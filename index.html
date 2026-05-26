@@ -110,7 +110,7 @@
     <h2><span class="n">2</span> Questions</h2>
     <p style="margin:0 0 14px;font-size:13px;color:var(--muted);line-height:1.5">
       Add a slot per question, drop its screenshot in, and tap Convert. The server reads the question
-      into LaTeX, extracts the total mark, and auto-crops every figure — named to match the code.
+      into LaTeX and places a numbered figure placeholder (1.png, 2.png, …) wherever a figure appears. You supply the cropped images yourself.
     </p>
     <div id="questions"></div>
     <button class="add-q" id="addQ">+ Add Question</button>
@@ -167,8 +167,7 @@ async function convertQuestion(q){
     q.latex = data.latex || '';
     q.totalMarks = data.totalMarks;
     q.marksFound = data.marksFound;
-    q.crops = data.crops || [];                 // [{tempName, dataUrl?}] previews
-    q.tempImageNames = (data.crops||[]).map(c=>c.tempName);
+    q.figureCount = data.figureCount || 0;       // number of figure placeholders in this question
     q.status='ready';
   }catch(e){
     q.status='error'; q.error=e.message;
@@ -178,13 +177,13 @@ async function convertQuestion(q){
 
 function buildItemPreview(q){
   let body = q.latex||'% (not converted)';
-  // show final filenames in preview by replacing placeholders
-  (q.tempImageNames||[]).forEach((t,i)=>{ body = body.replace(`__FIGURE_${i+1}__`, q.images[i]?q.images[i].filename:`__FIGURE_${i+1}__`); });
-  // strip any \hline or Total line the model added (server handles these)
-  body = body.replace(/\\hline\s*$/,'').trim();
+  // strip any separator or Total line the model added (server handles these)
+  body = body.replace(/\\hrule\s*$/,'').replace(/\\hline\s*$/,'').trim();
   body = body.replace(/\\hfill\s*\\textbf\{.*Total for Question.*\}\s*$/,'').trim();
   const total = q.totalMarks!=null ? `\n\n\\hfill \\textbf{(Total for Question ${q.number} is ${q.totalMarks} marks)}` : '';
-  return `\\item\n${body}${total}\n\\hline`;
+  // if body begins with a block (figure/table), use \item \hfill
+  const head = body.replace(/^\s+/,'').startsWith('\\begin') ? '\\item \\hfill\n' : '\\item\n';
+  return `${head}${body}${total}\n\\hrule`;
 }
 
 function render(){
@@ -218,11 +217,10 @@ function render(){
     const dyn=card.querySelector('.dyn');
     if(q.status==='error'){ dyn.innerHTML=`<div class="errbox">⚠ ${q.error}</div>`; }
     if(q.status==='ready'){
-      const cropsHtml = (q.crops&&q.crops.length)? `<div class="crops">${q.crops.map((c,i)=>`
-          <div class="crop">${c.dataUrl?`<img src="${c.dataUrl}">`:''}<div class="cap">${q.images[i]?q.images[i].filename:c.tempName}</div></div>`).join('')}</div>`:'';
+      const figNote = (q.figureCount>0)? `<div class="warnbox">📎 ${q.figureCount} figure${q.figureCount!==1?'s':''} detected — supply ${q.figureCount===1?'an image named like 1.png':'images named 1.png, 2.png, …'} (numbered across the whole paper) when you compile.</div>`:'';
       const marksWarn=q.marksFound===false?`<div class="warnbox">⚠ No total-mark line found in the image — enter it manually.</div>`:'';
       dyn.innerHTML=`
-        ${cropsHtml}
+        ${figNote}
         ${marksWarn}
         <div class="marks-row"><label style="margin:0">Total marks</label>
           <input type="text" value="${q.totalMarks??''}" data-act="marks">
@@ -256,7 +254,7 @@ async function exportPaper(){
     inst:$('#p_inst').value, contact:$('#p_contact').value, date:$('#p_date').value,
     questions: state.questions.map(q=>({
       body: q.latex||'', marks: q.totalMarks!=null&&q.totalMarks!==''?parseInt(q.totalMarks):null,
-      tempImageNames: q.tempImageNames||[]
+      figureCount: q.figureCount||0
     }))
   };
   $('#exportBtn').disabled=true; $('#exportBtn').textContent='Bundling…';
@@ -270,7 +268,7 @@ async function exportPaper(){
   $('#exportBtn').disabled=false; $('#exportBtn').textContent='Export .tex + figures (zip)';
 }
 
-$('#addQ').onclick=()=>{ state.questions.push({images:[],rawFiles:[],latex:'',totalMarks:null,status:'empty',marksFound:null,crops:[],tempImageNames:[]}); render(); };
+$('#addQ').onclick=()=>{ state.questions.push({images:[],rawFiles:[],latex:'',totalMarks:null,status:'empty',marksFound:null,figureCount:0}); render(); };
 $('#previewBtn').onclick=()=>{ $('#fullLatex').textContent=fullLatexPreview(); previewModal.showModal(); };
 $('#copyLatex').onclick=()=>{ navigator.clipboard.writeText(fullLatexPreview()); $('#copyLatex').textContent='Copied ✓'; setTimeout(()=>$('#copyLatex').textContent='Copy',1500); };
 $('#exportBtn').onclick=exportPaper;
