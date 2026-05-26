@@ -82,9 +82,44 @@
   .modal-body .latex-out{margin:0;border-radius:0;max-height:60vh}
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid #fff6;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:6px}
   @keyframes spin{to{transform:rotate(360deg)}}
+.figslots{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+.figslot{display:flex;align-items:center;gap:8px;border:1px solid #d8cfc2;border-radius:8px;padding:6px 10px;background:#fff}
+.figlbl{font-weight:600;font-size:13px}
+.figprev{height:40px;border:1px solid #ccc;border-radius:4px}
+.figempty{color:#a08; font-size:12px;color:#b05}
+.cropmodal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center}
+.cropbox{background:#fff;border-radius:12px;width:min(900px,94vw);max-height:92vh;display:flex;flex-direction:column;overflow:hidden}
+.crophead{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #eee;font-weight:600}
+.crophead .spacer{flex:1}
+.cropimgpicker{display:flex;gap:8px;padding:8px 16px;flex-wrap:wrap}
+.cropimgpicker button{border:1px solid #ccc;border-radius:6px;padding:4px 8px;background:#f6f2ec;cursor:pointer;font-size:12px}
+.cropimgpicker button.active{background:#c0541f;color:#fff;border-color:#c0541f}
+.cropstage{overflow:auto;padding:16px;flex:1;display:flex;justify-content:center;align-items:flex-start;background:#f0ece5}
+.cropcanvaswrap{position:relative;display:inline-block;line-height:0}
+.cropcanvaswrap img{max-width:100%;user-select:none}
+.cropsel{position:absolute;border:2px dashed #c0541f;background:rgba(192,84,31,.15);pointer-events:none}
+.crophint{padding:10px 16px;font-size:12px;color:#666;border-top:1px solid #eee}
 </style>
 </head>
 <body>
+<div id="cropModal" class="cropmodal" style="display:none">
+  <div class="cropbox">
+    <div class="crophead">
+      <span id="cropTitle">Crop figure</span>
+      <span class="spacer"></span>
+      <button id="cropCancel" class="btn-sm">Cancel</button>
+      <button id="cropSave" class="btn-primary btn-sm">Save crop</button>
+    </div>
+    <div id="cropImgPicker" class="cropimgpicker"></div>
+    <div class="cropstage">
+      <div id="cropCanvasWrap" class="cropcanvaswrap">
+        <img id="cropImg" draggable="false">
+        <div id="cropSel" class="cropsel" style="display:none"></div>
+      </div>
+    </div>
+    <div class="crophint">Drag a box over the figure. Use the buttons above to switch image if you uploaded more than one.</div>
+  </div>
+</div>
 <div class="wrap">
   <header class="brand">
     <span class="logo">Paper<b>Forge</b></span>
@@ -217,10 +252,24 @@ function render(){
     const dyn=card.querySelector('.dyn');
     if(q.status==='error'){ dyn.innerHTML=`<div class="errbox">⚠ ${q.error}</div>`; }
     if(q.status==='ready'){
-      const figNote = (q.figureCount>0)? `<div class="warnbox">📎 ${q.figureCount} figure${q.figureCount!==1?'s':''} detected — supply ${q.figureCount===1?'an image named like 1.png':'images named 1.png, 2.png, …'} (numbered across the whole paper) when you compile.</div>`:'';
       const marksWarn=q.marksFound===false?`<div class="warnbox">⚠ No total-mark line found in the image — enter it manually.</div>`:'';
+      let figSlots = '';
+      if(q.figureCount>0){
+        q.figureCrops = q.figureCrops || [];
+        let slots = '';
+        for(let i=1;i<=q.figureCount;i++){
+          const crop = q.figureCrops[i-1];
+          slots += `<div class="figslot">
+            <span class="figlbl">Figure ${i}</span>
+            ${crop?`<img class="figprev" src="${crop}">`:'<span class="figempty">not cropped</span>'}
+            <button class="btn-sm" data-crop="${i}">${crop?'Re-crop':'Crop'}</button>
+          </div>`;
+        }
+        figSlots = `<div class="warnbox">📎 ${q.figureCount} figure${q.figureCount!==1?'s':''} detected — crop each from your uploaded image(s).</div>
+          <div class="figslots">${slots}</div>`;
+      }
       dyn.innerHTML=`
-        ${figNote}
+        ${figSlots}
         ${marksWarn}
         <div class="marks-row"><label style="margin:0">Total marks</label>
           <input type="text" value="${q.totalMarks??''}" data-act="marks">
@@ -235,6 +284,7 @@ function render(){
     card.querySelector('[data-act="del"]').onclick=()=>{state.questions=state.questions.filter(x=>x!==q);render();};
     const conv=card.querySelector('[data-act="convert"]'); if(conv) conv.onclick=()=>convertQuestion(q);
     const marks=card.querySelector('[data-act="marks"]'); if(marks) marks.onchange=e=>{q.totalMarks=e.target.value;render();};
+    card.querySelectorAll('[data-crop]').forEach(b=>b.onclick=()=>openCropper(q, +b.dataset.crop));
     thumbs.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{q.images.splice(+b.dataset.rm,1);q.rawFiles.splice(+b.dataset.rm,1);if(!q.images.length)q.status='empty';render();});
     qContainer.appendChild(card);
   });
@@ -246,16 +296,105 @@ function move(q,d){const i=state.questions.indexOf(q),j=i+d;if(j<0||j>=state.que
 async function addImages(q,files){ for(const f of files){ const url=await fileToB64(f); q.images.push({dataUrl:url,filename:''}); q.rawFiles.push(f);} render(); }
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
+/* ---- in-app figure cropper (Option B) ---- */
+let cropState = { q:null, figNum:0, imgIdx:0, sel:null, dragging:false, startX:0, startY:0 };
+
+function openCropper(q, figNum){
+  if(!q.images || !q.images.length){ alert('Upload the screenshot(s) for this question first.'); return; }
+  cropState = { q, figNum, imgIdx:0, sel:null, dragging:false, startX:0, startY:0 };
+  document.getElementById('cropTitle').textContent = `Crop Figure ${figNum} — Question ${q.number}`;
+  // image picker buttons (one per uploaded image)
+  const picker = document.getElementById('cropImgPicker');
+  picker.innerHTML = q.images.map((im,i)=>`<button data-img="${i}" class="${i===0?'active':''}">Image ${i+1}</button>`).join('');
+  picker.querySelectorAll('[data-img]').forEach(b=>b.onclick=()=>{
+    cropState.imgIdx=+b.dataset.img;
+    picker.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    loadCropImage();
+  });
+  document.getElementById('cropModal').style.display='flex';
+  loadCropImage();
+}
+
+function loadCropImage(){
+  const img = document.getElementById('cropImg');
+  const sel = document.getElementById('cropSel');
+  sel.style.display='none'; cropState.sel=null;
+  img.src = cropState.q.images[cropState.imgIdx].dataUrl;
+}
+
+(function initCropperEvents(){
+  const wrap = document.getElementById('cropCanvasWrap');
+  const sel = document.getElementById('cropSel');
+  function pos(e){
+    const r = wrap.getBoundingClientRect();
+    const cx = (e.touches?e.touches[0].clientX:e.clientX) - r.left;
+    const cy = (e.touches?e.touches[0].clientY:e.clientY) - r.top;
+    return { x:Math.max(0,Math.min(cx,r.width)), y:Math.max(0,Math.min(cy,r.height)) };
+  }
+  function down(e){ e.preventDefault(); const p=pos(e); cropState.dragging=true; cropState.startX=p.x; cropState.startY=p.y;
+    sel.style.display='block'; sel.style.left=p.x+'px'; sel.style.top=p.y+'px'; sel.style.width='0px'; sel.style.height='0px'; }
+  function move(e){ if(!cropState.dragging)return; const p=pos(e);
+    const x=Math.min(p.x,cropState.startX), y=Math.min(p.y,cropState.startY);
+    const w=Math.abs(p.x-cropState.startX), h=Math.abs(p.y-cropState.startY);
+    sel.style.left=x+'px'; sel.style.top=y+'px'; sel.style.width=w+'px'; sel.style.height=h+'px';
+    cropState.sel={x,y,w,h}; }
+  function up(){ cropState.dragging=false; }
+  wrap.addEventListener('mousedown',down); wrap.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+  wrap.addEventListener('touchstart',down,{passive:false}); wrap.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',up);
+})();
+
+document.getElementById('cropCancel').onclick=()=>{ document.getElementById('cropModal').style.display='none'; };
+
+document.getElementById('cropSave').onclick=()=>{
+  const { q, figNum, sel, imgIdx } = cropState;
+  if(!sel || sel.w<5 || sel.h<5){ alert('Drag a box over the figure first.'); return; }
+  const img = document.getElementById('cropImg');
+  // map displayed coords -> natural image pixels
+  const scaleX = img.naturalWidth / img.clientWidth;
+  const scaleY = img.naturalHeight / img.clientHeight;
+  const sx = sel.x*scaleX, sy = sel.y*scaleY, sw = sel.w*scaleX, sh = sel.h*scaleY;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sw); canvas.height = Math.round(sh);
+  const ctx = canvas.getContext('2d');
+  const full = new Image();
+  full.onload = ()=>{
+    ctx.drawImage(full, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+    q.figureCrops = q.figureCrops || [];
+    q.figureCrops[figNum-1] = dataUrl;
+    document.getElementById('cropModal').style.display='none';
+    render();
+  };
+  full.src = q.images[imgIdx].dataUrl;
+};
+
 /* ---- export: send whole paper to /export, download the zip the server returns ---- */
 async function exportPaper(){
   renumber();
+  // collect all crops globally in question order, named 1.png, 2.png...
+  const figures = [];
+  let gidx = 0;
+  for(const q of state.questions){
+    const n = q.figureCount||0;
+    for(let i=0;i<n;i++){
+      gidx++;
+      const crop = (q.figureCrops||[])[i];
+      figures.push({ name:`${gidx}.png`, dataUrl: crop||null });
+    }
+  }
+  const missing = figures.filter(f=>!f.dataUrl).map(f=>f.name);
+  if(missing.length){
+    if(!confirm(`These figures are not cropped yet: ${missing.join(', ')}.\nExport anyway (placeholders will reference missing images)?`)) return;
+  }
   const payload={
     title:$('#p_title').value, author:$('#p_author').value, cred:$('#p_cred').value,
     inst:$('#p_inst').value, contact:$('#p_contact').value, date:$('#p_date').value,
     questions: state.questions.map(q=>({
       body: q.latex||'', marks: q.totalMarks!=null&&q.totalMarks!==''?parseInt(q.totalMarks):null,
       figureCount: q.figureCount||0
-    }))
+    })),
+    figures: figures.filter(f=>f.dataUrl)
   };
   $('#exportBtn').disabled=true; $('#exportBtn').textContent='Bundling…';
   try{
