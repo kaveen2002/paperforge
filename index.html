@@ -376,11 +376,21 @@ document.getElementById('cropSave').onclick=()=>{
 /* ---- export: send whole paper to /export, download the zip the server returns ---- */
 async function exportPaper(){
   renumber();
-  // collect all crops globally in question order, named 1.png, 2.png...
+  // Collect crops globally in question order, named 1.png, 2.png... GLOBALLY.
+  // Number them the SAME way the server remaps the body: by counting the figure
+  // placeholders that actually appear in each question's LaTeX (\includegraphics
+  // {N.png}), in order. This keeps crop filenames in lock-step with the body refs
+  // even if figureCount/figureCrops drift.
   const figures = [];
   let gidx = 0;
   for(const q of state.questions){
-    const n = Math.max(q.figureCount||0, (q.figureCrops||[]).length);
+    // distinct local placeholders in this question's body, in order of appearance
+    const seen = [];
+    const re = /\{(\d+)\.png\}/g; let m;
+    const body = q.latex||'';
+    while((m = re.exec(body))){ if(!seen.includes(m[1])) seen.push(m[1]); }
+    // how many figures this question has = max(placeholders found, crops made, AI count)
+    const n = Math.max(seen.length, (q.figureCrops||[]).length, q.figureCount||0);
     for(let i=0;i<n;i++){
       gidx++;
       const crop = (q.figureCrops||[])[i];
