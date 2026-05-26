@@ -383,7 +383,11 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     try:
         resp = model.generate_content(
             content_parts,
-            generation_config={"response_mime_type": "application/json", "temperature": 0.1},
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": 0.1,
+                "max_output_tokens": 8192,
+            },
         )
         text = resp.text.strip()
     except Exception as e:
@@ -431,20 +435,74 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
 
 def _parse_json(text):
     text = re.sub(r"^```(json)?\s*|```\s*$", "", text.strip()).strip()
+    # attempt 1: direct
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+    # attempt 2: fix unescaped newlines in strings
     try:
         return json.loads(re.sub(r'(?<!\\)\n', r'\\n', text))
     except json.JSONDecodeError:
         pass
+    # attempt 3: extract the JSON object
     m = re.search(r'\{.*\}', text, re.DOTALL)
     if m:
         try:
             return json.loads(re.sub(r'(?<!\\)\n', r'\\n', m.group()))
         except json.JSONDecodeError:
             pass
+    # attempt 4: response was TRUNCATED mid-JSON — try to repair by closing it
+    repaired = _repair_truncated(text)
+    if repaired is not None:
+        return repaired
+    return None
+
+
+def _repair_truncated(text):
+    """Best-effort repair of a JSON object cut off mid-stream.
+    Strategy: keep only up to the last COMPLETE top-level structure we can close.
+    Truncation recovery is lossy; this salvages what parsed cleanly."""
+    s = re.sub(r'(?<!\\)\n', r'\\n', text)
+    start = s.find('{')
+    if start == -1:
+        return None
+    s = s[start:]
+    # progressively trim from the end, trying to close open braces/brackets, until valid
+    # first, try closing as-is with bracket balancing
+    def try_close(fragment):
+        stack, in_str, esc = [], False, False
+        for ch in fragment:
+            if esc: esc = False; continue
+            if ch == '\\': esc = True; continue
+            if ch == '"': in_str = not in_str; continue
+            if in_str: continue
+            if ch in '{[': stack.append(ch)
+            elif ch == '}' and stack and stack[-1] == '{': stack.pop()
+            elif ch == ']' and stack and stack[-1] == '[': stack.pop()
+        suffix = '"' if in_str else ''
+        for opener in reversed(stack):
+            suffix += '}' if opener == '{' else ']'
+        return fragment + suffix
+
+    # try the full fragment, then trim back to each preceding '}' (end of a complete part)
+    candidates = [try_close(s)]
+    # cut at successive last '}' positions to drop an incomplete trailing object
+    idx = len(s)
+    for _ in range(6):
+        cut = s.rfind('}', 0, idx)
+        if cut == -1:
+            break
+        frag = s[:cut+1]
+        # strip a trailing comma if present
+        frag = re.sub(r',\s*$', '', frag)
+        candidates.append(try_close(frag))
+        idx = cut
+    for cand in candidates:
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError:
+            continue
     return None
 
 
