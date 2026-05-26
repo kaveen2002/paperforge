@@ -20,10 +20,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from PIL import Image
-import google.generativeai as genai
+
+# Gemini 2.5 Flash has "thinking" ON by default; thinking tokens are billed against
+# max_output_tokens and can truncate the JSON mid-stream. The ONLY reliable way to
+# turn thinking off is the NEW google-genai SDK (thinking_budget=0). The legacy
+# google.generativeai SDK CANNOT disable it. So we prefer the new SDK if installed
+# and fall back to the legacy one otherwise.
+import google.generativeai as genai            # legacy (fallback)
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
+
+try:
+    from google import genai as genai_new       # new unified SDK
+    from google.genai import types as genai_types
+    _NEW_SDK = True
+    _new_client = genai_new.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+except Exception:
+    _NEW_SDK = False
+    _new_client = None
 
 MODEL = "gemini-2.5-flash"
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
 app = FastAPI(title="PaperForge")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -576,43 +591,17 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(500, "GEMINI_API_KEY not set on the server")
 
-    content_parts = []
-    for i, (raw, mime) in enumerate(raw_list, start=1):
-        content_parts.append({"mime_type": mime, "data": raw})
-        if len(raw_list) > 1:
-            content_parts.append(f"(Screenshot {i} of {len(raw_list)} for the same question.)")
-    content_parts.append("Extract the structure of this exam question. Return valid JSON only.")
-
-    model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
-    # Build generation config. Gemini 2.5 Flash has "thinking" ON by default, and
-    # thinking tokens are billed against max_output_tokens — on a long multi-part
-    # question they can eat the budget and the JSON gets cut off mid-stream
-    # (the "did not return valid JSON" / truncated-text error). We don't need
-    # reasoning for structured extraction, so disable it to give 100% of the
-    # output budget to the JSON itself.
-    gen_config = {
-        "response_mime_type": "application/json",
-        "temperature": 0.1,
-        "max_output_tokens": 65000,
-        "thinking_config": {"thinking_budget": 0},
-    }
+    # Call Gemini. Prefer the NEW SDK so we can actually disable thinking
+    # (thinking_budget=0) — this is what prevents the JSON from being truncated
+    # mid-stream by thinking tokens. Fall back to the legacy SDK if the new one
+    # isn't installed.
     try:
-        resp = model.generate_content(content_parts, generation_config=gen_config)
+        text, finish = _call_gemini(raw_list)
+    except HTTPException:
+        raise
     except Exception as e:
-        # Some SDK/model combos reject thinking_config; retry once without it so a
-        # version mismatch never hard-fails the whole request.
-        if "thinking" in str(e).lower():
-            gen_config.pop("thinking_config", None)
-            try:
-                resp = model.generate_content(content_parts, generation_config=gen_config)
-            except Exception as e2:
-                raise HTTPException(502, f"Gemini call failed: {e2}")
-        else:
-            raise HTTPException(502, f"Gemini call failed: {e}")
+        raise HTTPException(502, f"Gemini call failed: {e}")
 
-    # Pull the text out robustly. resp.text can raise if the only candidate was
-    # blocked or finished without a normal text part, so dig into candidates.
-    text, finish = _extract_text(resp)
     if not text:
         reason = finish or "unknown"
         raise HTTPException(502,
@@ -646,6 +635,69 @@ async def convert(images: List[UploadFile] = File(...), questionNumber: int = Fo
     total = structured.get("totalMarks")
     return {"latex": latex, "totalMarks": total, "marksFound": total is not None,
             "structured": structured, "figureCount": fig_count}
+
+
+def _call_gemini(raw_list):
+    """Run extraction. Returns (text, finish_reason). Uses the new google-genai SDK
+    with thinking DISABLED when available (prevents thinking tokens from truncating
+    the JSON); otherwise falls back to the legacy SDK."""
+    user_note = "Extract the structure of this exam question. Return valid JSON only."
+
+    if _NEW_SDK and _new_client is not None:
+        # ---- NEW SDK path: thinking_budget=0 actually turns thinking OFF ----
+        parts = []
+        for i, (raw, mime) in enumerate(raw_list, start=1):
+            parts.append(genai_types.Part.from_bytes(data=raw, mime_type=mime))
+            if len(raw_list) > 1:
+                parts.append(genai_types.Part.from_text(
+                    text=f"(Screenshot {i} of {len(raw_list)} for the same question.)"))
+        parts.append(genai_types.Part.from_text(text=user_note))
+        cfg = genai_types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            temperature=0.1,
+            max_output_tokens=65000,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        )
+        resp = _new_client.models.generate_content(model=MODEL, contents=parts, config=cfg)
+        # normalise text + finish reason out of the new-SDK response
+        text = ""
+        try:
+            text = (resp.text or "").strip()
+        except Exception:
+            text = ""
+        finish = None
+        try:
+            cand = resp.candidates[0]
+            finish = getattr(cand, "finish_reason", None)
+            if not text:
+                buf = []
+                for p in (getattr(getattr(cand, "content", None), "parts", []) or []):
+                    val = getattr(p, "text", None)
+                    if val and not getattr(p, "thought", False):
+                        buf.append(val)
+                text = "".join(buf).strip()
+        except Exception:
+            pass
+        return text, finish
+
+    # ---- LEGACY SDK path: cannot disable thinking; rely on big budget + repair ----
+    content_parts = []
+    for i, (raw, mime) in enumerate(raw_list, start=1):
+        content_parts.append({"mime_type": mime, "data": raw})
+        if len(raw_list) > 1:
+            content_parts.append(f"(Screenshot {i} of {len(raw_list)} for the same question.)")
+    content_parts.append(user_note)
+    model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
+    resp = model.generate_content(
+        content_parts,
+        generation_config={
+            "response_mime_type": "application/json",
+            "temperature": 0.1,
+            "max_output_tokens": 65000,
+        },
+    )
+    return _extract_text(resp)
 
 
 def _extract_text(resp):
@@ -850,11 +902,24 @@ def _build_doc(p, items):
         "\\DeclareUnicodeCharacter{03A9}{\\ensuremath{\\Omega}}\n"
         "\\DeclareUnicodeCharacter{2126}{\\ensuremath{\\Omega}}\n"
         "\\DeclareUnicodeCharacter{00B0}{\\textdegree}\n"
+        "\\DeclareUnicodeCharacter{00B9}{\\textsuperscript{1}}\n"
         "\\DeclareUnicodeCharacter{00B2}{\\textsuperscript{2}}\n"
         "\\DeclareUnicodeCharacter{00B3}{\\textsuperscript{3}}\n"
+        "\\DeclareUnicodeCharacter{2070}{\\textsuperscript{0}}\n"
+        "\\DeclareUnicodeCharacter{2074}{\\textsuperscript{4}}\n"
+        "\\DeclareUnicodeCharacter{2075}{\\textsuperscript{5}}\n"
+        "\\DeclareUnicodeCharacter{2076}{\\textsuperscript{6}}\n"
+        "\\DeclareUnicodeCharacter{2077}{\\textsuperscript{7}}\n"
+        "\\DeclareUnicodeCharacter{2078}{\\textsuperscript{8}}\n"
+        "\\DeclareUnicodeCharacter{2079}{\\textsuperscript{9}}\n"
+        "\\DeclareUnicodeCharacter{207B}{\\textsuperscript{$-$}}\n"
         "\\DeclareUnicodeCharacter{00B7}{\\textperiodcentered}\n"
         "\\DeclareUnicodeCharacter{2212}{\\ensuremath{-}}\n"
         "\\DeclareUnicodeCharacter{00D7}{\\ensuremath{\\times}}\n"
+        "\\DeclareUnicodeCharacter{2080}{\\textsubscript{0}}\n"
+        "\\DeclareUnicodeCharacter{2081}{\\textsubscript{1}}\n"
+        "\\DeclareUnicodeCharacter{2082}{\\textsubscript{2}}\n"
+        "\\DeclareUnicodeCharacter{2083}{\\textsubscript{3}}\n"
         "\\geometry{margin=1in}\n\n\\begin{document}\n"
         f"\\title{{\\LARGE \\textbf{{{p.title}}}}}\n"
         f"\\author{{\\large {p.author} \\\\ \\text{{{p.cred}}} \\\\ {p.inst} \\\\ \\textbf{{Contact: {p.contact}}}}}\n"
@@ -863,6 +928,16 @@ def _build_doc(p, items):
     )
 
 
+BUILD_VERSION = "2026-05-26-newsdk-thinking-off-1"
+
 @app.get("/health")
 def health():
-    return {"ok": True, "model": MODEL, "key_set": bool(os.environ.get("GEMINI_API_KEY"))}
+    return {
+        "ok": True,
+        "version": BUILD_VERSION,
+        "model": MODEL,
+        "key_set": bool(os.environ.get("GEMINI_API_KEY")),
+        "new_sdk": _NEW_SDK,                     # True => thinking can be disabled
+        "thinking_disabled": _NEW_SDK,           # True only when the new SDK is active
+        "gemini_path": "google-genai (thinking off)" if _NEW_SDK else "legacy google.generativeai",
+    }
