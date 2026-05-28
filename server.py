@@ -551,16 +551,16 @@ def export(paper: PaperIn):
     items = []
     for qi, q in enumerate(paper.questions, start=1):
         body = (q.body or "").strip()
-        # renumber this question's local figure placeholders (1.png,2.png within the body)
-        # to global numbers across the whole paper.
-        # The body uses {k.png} per-question; remap to running globals.
-        n_here = int(q.figureCount or 0)
-        if n_here > 0:
-            # replace from highest to lowest to avoid collisions
+        # Renumber this question's LOCAL figure placeholders ({1.png},{2.png}...) to
+        # running GLOBAL numbers across the whole paper (numbering never resets per question).
+        # Scan the body for the actual placeholder numbers present, to be robust.
+        local_nums = sorted({int(x) for x in re.findall(r'\{(\d+)\.png\}', body)})
+        if local_nums:
             mapping = {}
-            for local_k in range(1, n_here + 1):
+            for local_k in local_nums:
                 global_idx += 1
                 mapping[local_k] = global_idx
+            # two-step swap via sentinel to avoid collisions
             for local_k in sorted(mapping.keys(), reverse=True):
                 body = body.replace(f"{{{local_k}.png}}", f"{{__G{mapping[local_k]}__}}")
             body = re.sub(r"__G(\d+)__", r"\1.png", body)
