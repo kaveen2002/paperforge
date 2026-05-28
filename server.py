@@ -458,40 +458,73 @@ def _call_and_parse(content_parts):
     if data is not None:
         return data
 
-    # parse failed — was it truncation? if so retry once with a much higher ceiling.
-    if _finish_truncated(resp) or not text.rstrip().endswith("}"):
-        try:
-            text2, resp2 = _one_call(content_parts, 32768)
-        except Exception as e:
-            kind = _classify_error(str(e))
-            if kind == "rate":
-                raise HTTPException(429, "Gemini is rate-limited right now. Wait a few seconds and press Convert again.")
-            raise HTTPException(502, "This question was too long to process in one go. Try splitting it into two smaller screenshots.")
-        data2 = _parse_json(text2)
-        if data2 is not None:
-            return data2
-        raise HTTPException(502, "This question was too long to process in one go. Try splitting it into two smaller screenshots, or convert its parts separately.")
+    # Parse failed for ANY reason — retry once with a much higher token ceiling.
+    # (Covers real truncation AND cases where finish-reason detection missed it.)
+    try:
+        text2, resp2 = _one_call(content_parts, 32768)
+    except Exception as e:
+        kind = _classify_error(str(e))
+        if kind == "rate":
+            raise HTTPException(429, "Gemini is rate-limited right now. Wait a few seconds and press Convert again.")
+        raise HTTPException(502, "Could not process this question. Try splitting it into two smaller screenshots.")
+    data2 = _parse_json(text2)
+    if data2 is not None:
+        return data2
 
-    # not truncation — genuinely malformed
-    raise HTTPException(502, "Gemini returned an unexpected response. Please press Convert again.")
+    # Still failing — final attempt: ask the model for a more compact response
+    # (shorter field values) so the JSON fits and stays well-formed.
+    concise = list(content_parts)
+    concise.append("IMPORTANT: Return COMPACT valid JSON. Keep text fields complete but do not "
+                   "add any commentary. Ensure the JSON is fully closed and valid.")
+    try:
+        text3, resp3 = _one_call(concise, 32768)
+    except Exception:
+        text3 = ""
+    data3 = _parse_json(text3) if text3 else None
+    if data3 is not None:
+        return data3
 
+    raise HTTPException(502, "This question is too complex to process in one go. Try splitting it into two "
+                             "screenshots (e.g. parts (a)-(b) in one, the rest in another) and convert each separately.")
+
+
+def _fix_invalid_escapes(s):
+    r"""Double any backslash that is NOT a valid JSON escape.
+    Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX.
+    LaTeX like \( \, \text becomes \\( \\, \\text so the JSON parses."""
+    return re.sub(r'\\(?![\\"/bfnrtu])', r'\\\\', s)
 
 def _parse_json(text):
+    if not text:
+        return None
     text = re.sub(r"^```(json)?\s*|```\s*$", "", text.strip()).strip()
+    # 1: direct
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+    # 2: escape raw newlines
     try:
         return json.loads(re.sub(r'(?<!\\)\n', r'\\n', text))
     except json.JSONDecodeError:
         pass
+    # 3: extract outermost object
     m = re.search(r'\{.*\}', text, re.DOTALL)
-    if m:
+    candidate = m.group() if m else text
+    # 4: progressive cleanup, INCLUDING invalid LaTeX escape sequences
+    variants = []
+    base = candidate.replace('\t', '\\t').replace('\r', '\\r')
+    base = re.sub(r'(?<!\\)\n', r'\\n', base)
+    base = re.sub(r',\s*([}\]])', r'\1', base)            # trailing commas
+    variants.append(base)
+    variants.append(_fix_invalid_escapes(base))           # fix \( \, \text etc.
+    variants.append(_fix_invalid_escapes(candidate))
+    variants.append(candidate)
+    for attempt in variants:
         try:
-            return json.loads(re.sub(r'(?<!\\)\n', r'\\n', m.group()))
+            return json.loads(attempt)
         except json.JSONDecodeError:
-            pass
+            continue
     return None
 
 
